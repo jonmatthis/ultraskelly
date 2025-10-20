@@ -99,7 +99,7 @@ def parse_detections(*, metadata: dict[str, Any]) -> list[Detection]:
     return detections
 
 
-def draw_detections(*, request, stream: str = "main") -> None:
+def draw_detections( request, stream: str = "main") -> None:
     """
     Draw bounding boxes and labels on the camera preview.
     
