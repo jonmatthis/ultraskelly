@@ -54,12 +54,15 @@ def main() -> None:
     
     print("\n" + "="*60)
     print("Controls:")
-    print("  ← →       - Yaw left/right")
-    print("  ↑ ↓       - Pitch up/down")
-    print("  Q / W     - Roll counterclockwise/clockwise")
-    print("  R         - Reset to center")
-    print("  ESC       - Quit")
+    print("  ← → (or J/L) - Yaw left/right")
+    print("  ↑ ↓ (or I/K) - Pitch up/down")
+    print("  Q / W        - Roll counterclockwise/clockwise")
+    print("  R            - Reset to center")
+    print("  ESC          - Quit")
+    print("\n⚠ IMPORTANT: Click on the camera window to give it focus!")
     print("="*60 + "\n")
+    
+    debug_keys: bool = True  # Set to False to disable key code printing
     
     try:
         while True:
@@ -82,8 +85,12 @@ def main() -> None:
             # Show frame
             cv2.imshow("Manual Control", frame_bgr)
             
-            # Handle keyboard
-            key: int = cv2.waitKey(1) & 0xFF
+            # Handle keyboard (longer wait for better key detection)
+            key: int = cv2.waitKey(30) & 0xFF
+            
+            # Debug: print key codes
+            if key != 255 and debug_keys:
+                print(f"Key pressed: {key}")
             
             if key == 27:  # ESC
                 break
@@ -95,26 +102,48 @@ def main() -> None:
                 kit.servo[yaw_channel].angle = yaw_angle
                 kit.servo[roll_channel].angle = roll_angle
                 print("Reset to center")
-            elif key == 82:  # Up arrow
+            # Arrow keys - try multiple possible codes
+            elif key == 82 or key == 0:  # Up arrow
                 pitch_angle = max(min_angle, min(max_angle, pitch_angle - step))
                 kit.servo[pitch_channel].angle = pitch_angle
-            elif key == 84:  # Down arrow
+                print(f"Pitch: {pitch_angle:.0f}°")
+            elif key == 84 or key == 1:  # Down arrow
                 pitch_angle = max(min_angle, min(max_angle, pitch_angle + step))
                 kit.servo[pitch_channel].angle = pitch_angle
-            elif key == 81:  # Left arrow
+                print(f"Pitch: {pitch_angle:.0f}°")
+            elif key == 81 or key == 2:  # Left arrow
                 yaw_angle = max(min_angle, min(max_angle, yaw_angle + step))
                 kit.servo[yaw_channel].angle = yaw_angle
-            elif key == 83:  # Right arrow
+                print(f"Yaw: {yaw_angle:.0f}°")
+            elif key == 83 or key == 3:  # Right arrow
                 yaw_angle = max(min_angle, min(max_angle, yaw_angle - step))
                 kit.servo[yaw_channel].angle = yaw_angle
+                print(f"Yaw: {yaw_angle:.0f}°")
             elif key == ord('q') or key == ord('Q'):  # Roll left
                 roll_angle = max(min_angle, min(max_angle, roll_angle - step))
                 kit.servo[roll_channel].angle = roll_angle
+                print(f"Roll: {roll_angle:.0f}°")
             elif key == ord('w') or key == ord('W'):  # Roll right
                 roll_angle = max(min_angle, min(max_angle, roll_angle + step))
                 kit.servo[roll_channel].angle = roll_angle
-            
-            time.sleep(0.033)
+                print(f"Roll: {roll_angle:.0f}°")
+            # WASD alternatives for arrow keys
+            elif key == ord('i') or key == ord('I'):  # Up
+                pitch_angle = max(min_angle, min(max_angle, pitch_angle - step))
+                kit.servo[pitch_channel].angle = pitch_angle
+                print(f"Pitch: {pitch_angle:.0f}°")
+            elif key == ord('k') or key == ord('K'):  # Down
+                pitch_angle = max(min_angle, min(max_angle, pitch_angle + step))
+                kit.servo[pitch_channel].angle = pitch_angle
+                print(f"Pitch: {pitch_angle:.0f}°")
+            elif key == ord('j') or key == ord('J'):  # Left
+                yaw_angle = max(min_angle, min(max_angle, yaw_angle + step))
+                kit.servo[yaw_channel].angle = yaw_angle
+                print(f"Yaw: {yaw_angle:.0f}°")
+            elif key == ord('l') or key == ord('L'):  # Right
+                yaw_angle = max(min_angle, min(max_angle, yaw_angle - step))
+                kit.servo[yaw_channel].angle = yaw_angle
+                print(f"Yaw: {yaw_angle:.0f}°")
             
     except KeyboardInterrupt:
         print("\nStopping...")
