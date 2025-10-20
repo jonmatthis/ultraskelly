@@ -135,7 +135,7 @@ def main() -> None:
     imx500 = IMX500(network_file=MODEL_PATH)
     
     # Get network intrinsics (model configuration)
-    intrinsics: NetworkIntrinsics = imx500.network_intrinsics
+    intrinsics = imx500.network_intrinsics
     
     # Load class labels
     try:
@@ -214,11 +214,11 @@ LABELS_PATH: str = "/home/pi/picamera2/examples/imx500/assets/coco_labels.txt"
 CONFIDENCE_THRESHOLD: float = 0.55
 
 # Global state
-picam2: Picamera2 | None = None
-imx500: IMX500 | None = None
-intrinsics: NetworkIntrinsics | None = None
-labels: list[str] = []
-last_detections: list[Detection] = []
+picam2 = None
+imx500= None
+intrinsics = None
+labels= []
+last_detections = []
 
 
 if __name__ == "__main__":
