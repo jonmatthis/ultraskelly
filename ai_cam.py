@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-Raspberry Pi 5 AI Camera - Object Detection Loop
-Continuously captures frames and prints detected objects using the IMX500 sensor.
+Raspberry Pi 5 AI Camera - Object Detection with Live Preview
+Continuously captures frames, detects objects, and shows them in a preview window.
 """
 
 import time
 from typing import Any
 import numpy as np
+import cv2
 
-from picamera2 import Picamera2
+from picamera2 import Picamera2, MappedArray
 from picamera2.devices import IMX500
 from picamera2.devices.imx500 import NetworkIntrinsics
 
@@ -66,7 +67,6 @@ def parse_detections(*, metadata: dict[str, Any]) -> list[Detection]:
     input_w, input_h = imx500.get_input_size()
     
     # Extract boxes, scores, and classes from network output
-    # Format depends on model - this works for MobileNet SSD and YOLO models
     boxes: np.ndarray = np_outputs[0][0]
     scores: np.ndarray = np_outputs[1][0]
     classes: np.ndarray = np_outputs[2][0]
@@ -99,6 +99,64 @@ def parse_detections(*, metadata: dict[str, Any]) -> list[Detection]:
     return detections
 
 
+def draw_detections(*, request, stream: str = "main") -> None:
+    """
+    Draw bounding boxes and labels on the camera preview.
+    
+    Args:
+        request: Camera request with frame data
+        stream: Stream name to draw on
+    """
+    detections = last_detections
+    if not detections:
+        return
+    
+    with MappedArray(request, stream) as m:
+        for detection in detections:
+            x, y, w, h = detection.box
+            label: str = labels[detection.category]
+            
+            # Draw bounding box
+            cv2.rectangle(
+                img=m.array,
+                pt1=(x, y),
+                pt2=(x + w, y + h),
+                color=(0, 255, 0, 255),
+                thickness=2
+            )
+            
+            # Prepare label text
+            text: str = f"{label} {detection.confidence:.2f}"
+            
+            # Get text size for background
+            (text_width, text_height), baseline = cv2.getTextSize(
+                text=text,
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                fontScale=0.5,
+                thickness=1
+            )
+            
+            # Draw text background
+            cv2.rectangle(
+                img=m.array,
+                pt1=(x, y - text_height - 10),
+                pt2=(x + text_width + 10, y),
+                color=(0, 255, 0, 255),
+                thickness=-1
+            )
+            
+            # Draw text
+            cv2.putText(
+                img=m.array,
+                text=text,
+                org=(x + 5, y - 5),
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                fontScale=0.5,
+                color=(0, 0, 0, 255),
+                thickness=1
+            )
+
+
 def print_detections(*, detections: list[Detection], frame_number: int) -> None:
     """
     Print detected objects to console.
@@ -108,7 +166,8 @@ def print_detections(*, detections: list[Detection], frame_number: int) -> None:
         frame_number: Current frame number
     """
     if not detections:
-        print(f"Frame {frame_number}: No objects detected")
+        if frame_number % 30 == 0:  # Print every 30 frames to avoid spam
+            print(f"Frame {frame_number}: No objects detected")
         return
     
     print(f"\n{'='*60}")
@@ -152,7 +211,7 @@ def main() -> None:
     # Initialize Picamera2
     picam2 = Picamera2(camera_num=imx500.camera_num)
     
-    # Create camera configuration
+    # Create camera configuration with preview
     config = picam2.create_preview_configuration(
         controls={"FrameRate": intrinsics.inference_rate},
         buffer_count=12
@@ -163,17 +222,21 @@ def main() -> None:
     print("(This may take 1-2 minutes on first run)")
     imx500.show_network_fw_progress_bar()
     
-    # Start camera
-    picam2.start(config=config, show_preview=False)
+    # Start camera with preview window
+    picam2.start(config=config, show_preview=True)
     
     if intrinsics.preserve_aspect_ratio:
         imx500.set_auto_aspect_ratio()
     
     print("\n" + "="*60)
-    print("AI Camera running! Press Ctrl+C to stop")
+    print("AI Camera running with live preview!")
+    print("Press Ctrl+C to stop")
     print("="*60 + "\n")
     
     frame_count: int = 0
+    
+    # Register callback to draw detections on each frame
+    picam2.pre_callback = draw_detections
     
     try:
         while True:
@@ -187,13 +250,14 @@ def main() -> None:
                 # Parse detections from neural network output
                 detections: list[Detection] = parse_detections(metadata=metadata)
                 
-                # Print what was detected
-                print_detections(detections=detections, frame_number=frame_count)
+                # Print what was detected (less frequently to avoid spam)
+                if detections or frame_count % 30 == 0:
+                    print_detections(detections=detections, frame_number=frame_count)
                 
                 frame_count += 1
                 
-                # Small delay to make output readable
-                time.sleep(0.1)
+                # Small delay
+                time.sleep(0.033)  # ~30 fps
                 
             finally:
                 # Always release the request
@@ -213,11 +277,11 @@ MODEL_PATH: str = "/usr/share/imx500-models/imx500_network_ssd_mobilenetv2_fpnli
 LABELS_PATH: str = "/home/pi/picamera2/examples/imx500/assets/coco_labels.txt"
 CONFIDENCE_THRESHOLD: float = 0.55
 
-# Global state
+# Global state (no type annotations to avoid global declaration issues)
 picam2 = None
-imx500= None
+imx500 = None
 intrinsics = None
-labels= []
+labels = []
 last_detections = []
 
 
