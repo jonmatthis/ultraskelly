@@ -178,6 +178,27 @@ class ServoController:
         print("="*60 + "\n")
         time.sleep(1)
     
+    def manual_control(self, *, delta_yaw: float = 0.0, delta_pitch: float = 0.0, delta_roll: float = 0.0) -> None:
+        """
+        Manually adjust servo positions.
+        
+        Args:
+            delta_yaw: Amount to adjust yaw (degrees)
+            delta_pitch: Amount to adjust pitch (degrees)
+            delta_roll: Amount to adjust roll (degrees)
+        """
+        if delta_yaw != 0.0:
+            self.yaw_angle = self.clamp_angle(angle=self.yaw_angle + delta_yaw)
+            self.kit.servo[self.yaw_channel].angle = self.yaw_angle
+        
+        if delta_pitch != 0.0:
+            self.pitch_angle = self.clamp_angle(angle=self.pitch_angle + delta_pitch)
+            self.kit.servo[self.pitch_channel].angle = self.pitch_angle
+        
+        if delta_roll != 0.0:
+            self.roll_angle = self.clamp_angle(angle=self.roll_angle + delta_roll)
+            self.kit.servo[self.roll_channel].angle = self.roll_angle
+    
     def track_target(
         self,
         *,
@@ -277,13 +298,19 @@ def main() -> None:
     
     print("\n" + "="*60)
     print("TRACKING ACTIVE!")
-    print("- Tracks brightest point in frame")
-    print("- Red circle = tracked point")
-    print("- Blue crosshair = frame center")
-    print("Press Ctrl+C to stop")
+    print("="*60)
+    print("Controls:")
+    print("  SPACE     - Toggle auto-tracking ON/OFF")
+    print("  ← →       - Yaw left/right")
+    print("  ↑ ↓       - Pitch up/down")
+    print("  Q / W     - Roll counterclockwise/clockwise")
+    print("  R         - Reset to center")
+    print("  ESC       - Quit")
     print("="*60 + "\n")
     
     frame_count: int = 0
+    tracking_enabled: bool = True
+    manual_step: float = 2.0  # Degrees per key press
     
     try:
         while True:
