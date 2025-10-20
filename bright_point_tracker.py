@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Raspberry Pi Camera with Servo Brightness Tracking
-Tracks the brightest point in the frame and centers it with servos.
+Auto-calibrates servo directions by observing frame movement.
 """
 
 import time
@@ -12,7 +12,7 @@ from adafruit_servokit import ServoKit
 
 
 class ServoController:
-    """Controls servos to track brightest point."""
+    """Controls servos with automatic direction calibration."""
     
     def __init__(
         self,
@@ -46,9 +46,14 @@ class ServoController:
         self.min_angle: float = 30.0
         self.max_angle: float = 150.0
         
-        # Control parameters
+        # Control parameters (will be calibrated)
         self.p_gain: float = 0.1
         self.deadzone: float = 30.0
+        
+        # Calibration results - polarity determines direction
+        self.yaw_polarity: float = -1.0  # Will be calibrated
+        self.pitch_polarity: float = 1.0  # Will be calibrated
+        self.calibrated: bool = False
         
         # Center servos
         self.center_servos()
@@ -70,6 +75,109 @@ class ServoController:
         """Clamp angle to safe servo range."""
         return max(self.min_angle, min(self.max_angle, angle))
     
+    def move_servo(self, *, channel: int, delta: float) -> None:
+        """
+        Move a specific servo by a delta amount.
+        
+        Args:
+            channel: Servo channel to move
+            delta: Amount to move (degrees)
+        """
+        if channel == self.pitch_channel:
+            self.pitch_angle = self.clamp_angle(angle=self.pitch_angle + delta)
+            self.kit.servo[channel].angle = self.pitch_angle
+        elif channel == self.yaw_channel:
+            self.yaw_angle = self.clamp_angle(angle=self.yaw_angle + delta)
+            self.kit.servo[channel].angle = self.yaw_angle
+    
+    def calibrate(self, *, get_target_position_func) -> None:
+        """
+        Auto-calibrate servo directions by making test movements.
+        
+        Args:
+            get_target_position_func: Function that returns (x, y) of target
+        """
+        print("\n" + "="*60)
+        print("CALIBRATING SERVO DIRECTIONS")
+        print("="*60)
+        print("Please ensure a bright point is visible in the frame...")
+        time.sleep(2)
+        
+        # Center servos first
+        self.center_servos()
+        time.sleep(1)
+        
+        calibration_delta: float = 15.0  # Degrees to move for test
+        
+        # Calibrate YAW (horizontal)
+        print("\nCalibrating YAW (horizontal) servo...")
+        
+        # Get initial position
+        initial_x, initial_y = get_target_position_func()
+        print(f"  Initial target position: ({initial_x}, {initial_y})")
+        
+        # Move yaw servo positive direction
+        self.move_servo(channel=self.yaw_channel, delta=calibration_delta)
+        time.sleep(0.5)
+        
+        # Get new position
+        new_x, new_y = get_target_position_func()
+        print(f"  After +{calibration_delta}° yaw: ({new_x}, {new_y})")
+        
+        # Determine polarity
+        # If servo increases and target moves right (x increases), polarity is negative
+        # (because we want to decrease servo angle to move target left toward center)
+        x_movement: float = new_x - initial_x
+        if abs(x_movement) > 10:  # Significant movement detected
+            # Positive servo movement causing positive x movement means inverse relationship
+            self.yaw_polarity = -1.0 if x_movement > 0 else 1.0
+            print(f"  X movement: {x_movement:.1f} pixels")
+            print(f"  ✓ Yaw polarity set to: {self.yaw_polarity}")
+        else:
+            print(f"  ⚠ Minimal movement detected, using default polarity")
+            self.yaw_polarity = -1.0
+        
+        # Return to center
+        self.center_servos()
+        time.sleep(1)
+        
+        # Calibrate PITCH (vertical)
+        print("\nCalibrating PITCH (vertical) servo...")
+        
+        # Get initial position
+        initial_x, initial_y = get_target_position_func()
+        print(f"  Initial target position: ({initial_x}, {initial_y})")
+        
+        # Move pitch servo positive direction
+        self.move_servo(channel=self.pitch_channel, delta=calibration_delta)
+        time.sleep(0.5)
+        
+        # Get new position
+        new_x, new_y = get_target_position_func()
+        print(f"  After +{calibration_delta}° pitch: ({new_x}, {new_y})")
+        
+        # Determine polarity
+        y_movement: float = new_y - initial_y
+        if abs(y_movement) > 10:  # Significant movement detected
+            # Positive servo movement causing positive y movement means same relationship
+            self.pitch_polarity = 1.0 if y_movement > 0 else -1.0
+            print(f"  Y movement: {y_movement:.1f} pixels")
+            print(f"  ✓ Pitch polarity set to: {self.pitch_polarity}")
+        else:
+            print(f"  ⚠ Minimal movement detected, using default polarity")
+            self.pitch_polarity = 1.0
+        
+        # Return to center
+        self.center_servos()
+        
+        self.calibrated = True
+        print("\n" + "="*60)
+        print("CALIBRATION COMPLETE!")
+        print(f"Yaw polarity: {self.yaw_polarity}")
+        print(f"Pitch polarity: {self.pitch_polarity}")
+        print("="*60 + "\n")
+        time.sleep(1)
+    
     def track_target(
         self,
         *,
@@ -87,6 +195,9 @@ class ServoController:
             frame_width: Frame width in pixels
             frame_height: Frame height in pixels
         """
+        if not self.calibrated:
+            return
+        
         # Calculate center of frame
         center_x: float = frame_width / 2.0
         center_y: float = frame_height / 2.0
@@ -99,9 +210,9 @@ class ServoController:
         if abs(error_x) < self.deadzone and abs(error_y) < self.deadzone:
             return
         
-        # Calculate adjustments
-        yaw_adjustment: float = -error_x * self.p_gain
-        pitch_adjustment: float = error_y * self.p_gain
+        # Calculate adjustments with calibrated polarities
+        yaw_adjustment: float = self.yaw_polarity * error_x * self.p_gain
+        pitch_adjustment: float = self.pitch_polarity * error_y * self.p_gain
         
         # Update angles
         self.yaw_angle = self.clamp_angle(angle=self.yaw_angle + yaw_adjustment)
@@ -134,7 +245,7 @@ def find_brightest_point(*, frame: np.ndarray) -> tuple[int, int, float]:
 def main() -> None:
     """Main loop - track brightest point in frame."""
     print("="*60)
-    print("Brightness Tracking System")
+    print("Self-Calibrating Brightness Tracking System")
     print("="*60)
     
     # Initialize servo controller
@@ -150,8 +261,19 @@ def main() -> None:
     config = picam2.create_preview_configuration(
         main={"size": (640, 480)}
     )
-    picam2.configure(config=config)
+    picam2.configure(config)
     picam2.start()
+    time.sleep(2)  # Let camera warm up
+    
+    # Function to get current target position
+    def get_target_position() -> tuple[int, int]:
+        frame: np.ndarray = picam2.capture_array()
+        frame_bgr: np.ndarray = cv2.cvtColor(src=frame, code=cv2.COLOR_RGB2BGR)
+        x, y, _ = find_brightest_point(frame=frame_bgr)
+        return x, y
+    
+    # Run calibration
+    servo_controller.calibrate(get_target_position_func=get_target_position)
     
     print("\n" + "="*60)
     print("TRACKING ACTIVE!")
@@ -220,6 +342,17 @@ def main() -> None:
                 img=frame_bgr,
                 text=info_text,
                 org=(10, 30),
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                fontScale=0.7,
+                color=(255, 255, 255),
+                thickness=2
+            )
+            
+            calib_text: str = f"Yaw: {servo_controller.yaw_polarity:+.0f} | Pitch: {servo_controller.pitch_polarity:+.0f}"
+            cv2.putText(
+                img=frame_bgr,
+                text=calib_text,
+                org=(10, 60),
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX,
                 fontScale=0.7,
                 color=(255, 255, 255),
