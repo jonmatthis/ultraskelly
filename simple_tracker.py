@@ -20,8 +20,6 @@ class Config(BaseModel):
     
     # Servo settings
     servo_channel: int = Field(default=0, description="PWM channel (0-15)")
-    pulse_min: int = Field(default=150, description="PWM for 0°")
-    pulse_max: int = Field(default=600, description="PWM for 180°")
     servo_center: float = Field(default=90.0, description="Center position (degrees)")
     
     # PID tuning
@@ -73,7 +71,7 @@ class PIDController:
         
         # I term (with limits to prevent windup)
         self.integral += error * dt
-        self.integral = np.clip(self.integral, -5.0, 5.0)
+        self.integral = np.clip(a=self.integral, a_min=-5.0, a_max=5.0)
         i_term = self.ki * self.integral
         
         # D term
@@ -82,7 +80,7 @@ class PIDController:
         
         # Combine and limit
         velocity = p_term + i_term + d_term
-        velocity = np.clip(velocity, -30.0, 30.0)  # Max ±30°/s
+        velocity = np.clip(a=velocity, a_min=-30.0, a_max=30.0)  # Max ±30°/s
         
         return float(velocity)
     
@@ -98,37 +96,29 @@ class PIDController:
 # ============================================================================
 
 class ServoDriver:
-    """Controls a single servo via PCA9685."""
+    """Controls a single servo via ServoKit."""
     
     def __init__(self, config: Config):
         self.config = config
-        self.pca9685 = None
+        self.kit = None
         self._setup()
     
     def _setup(self) -> None:
         """Initialize hardware."""
         try:
-            from adafruit_pca9685 import PCA9685
-            from board import SCL, SDA
-            import busio
+            from adafruit_servokit import ServoKit
             
-            i2c = busio.I2C(scl=SCL, sda=SDA)
-            self.pca9685 = PCA9685(i2c_bus=i2c, address=0x40)
-            self.pca9685.frequency = 50
-            logger.info("Servo initialized")
+            self.kit = ServoKit(channels=16)
+            logger.info("Servo initialized via ServoKit")
         except Exception as e:
             logger.warning(f"No hardware: {e}")
     
     def set_angle(self, angle: float) -> None:
         """Set servo angle (0-180°)."""
-        angle = np.clip(angle, 0.0, 180.0)
-        pulse = int(
-            self.config.pulse_min + 
-            (angle / 180.0) * (self.config.pulse_max - self.config.pulse_min)
-        )
+        angle = np.clip(a=angle, a_min=0.0, a_max=180.0)
         
-        if self.pca9685 is not None:
-            self.pca9685.channels[self.config.servo_channel].duty_cycle = pulse
+        if self.kit is not None:
+            self.kit.servo[self.config.servo_channel].angle = angle
         else:
             logger.debug(f"[SIM] Servo={angle:.1f}°")
 
@@ -160,19 +150,27 @@ class BrightnessTracker:
         """
         Find the brightest point in the frame.
         
-        Returns (x, y) coordinates or None if no bright point found.
+        Args:
+            frame: RGB image array
+        
+        Returns:
+            (x, y) coordinates or None if no bright point found.
         """
-        # Convert to grayscale
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # Convert to grayscale from RGB
+        gray = cv2.cvtColor(src=frame, code=cv2.COLOR_RGB2GRAY)
         
         # Apply Gaussian blur to reduce noise
-        blurred = cv2.GaussianBlur(gray, (self.config.blur_size, self.config.blur_size), 0)
+        blurred = cv2.GaussianBlur(
+            src=gray, 
+            ksize=(self.config.blur_size, self.config.blur_size), 
+            sigmaX=0
+        )
         
         # Find the brightest point
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(blurred)
+        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(src=blurred)
         
-        # Only track if brightness is above threshold (avoid tracking dark scenes)
-        if max_val > 100:  # Adjust threshold as needed
+        # Only track if brightness is above threshold
+        if max_val > 100:
             return max_loc  # (x, y)
         
         return None
@@ -198,7 +196,7 @@ class BrightnessTracker:
         # Convert to target angle
         x_offset = (norm_x - 0.5) * self.config.camera_fov
         self.target_angle = self.config.servo_center + x_offset
-        self.target_angle = np.clip(self.target_angle, 0.0, 180.0)
+        self.target_angle = np.clip(a=self.target_angle, a_min=0.0, a_max=180.0)
         
         # Calculate velocity using PID
         velocity = self.pid.update(target=self.target_angle, current=self.current_angle)
@@ -206,71 +204,129 @@ class BrightnessTracker:
         # Update position
         dt = 0.033  # ~30 Hz
         self.current_angle += velocity * dt
-        self.current_angle = float(np.clip(self.current_angle, 0.0, 180.0))
+        self.current_angle = float(np.clip(a=self.current_angle, a_min=0.0, a_max=180.0))
         
         # Drive servo
         self.servo.set_angle(angle=self.current_angle)
     
     def draw_visualization(self, frame: np.ndarray) -> np.ndarray:
-        """Draw tracking visualization."""
+        """
+        Draw tracking visualization.
+        
+        Args:
+            frame: RGB image array
+            
+        Returns:
+            RGB image with visualization overlay
+        """
         h, w = frame.shape[:2]
         
-        # Draw frame center line
+        # Draw frame center line (white)
         center_x = w // 2
-        cv2.line(frame, (center_x, 0), (center_x, h), (255, 255, 255), 1)
+        cv2.line(img=frame, pt1=(center_x, 0), pt2=(center_x, h), color=(255, 255, 255), thickness=1)
         cv2.putText(
-            frame, "CENTER", (center_x - 40, 20),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1
+            img=frame, 
+            text="CENTER", 
+            org=(center_x - 40, 20),
+            fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
+            fontScale=0.5, 
+            color=(255, 255, 255), 
+            thickness=1
         )
         
-        # Draw current aim point (where servo is pointing)
+        # Draw current aim point (where servo is pointing) - yellow
         angle_offset = (self.current_angle - self.config.servo_center) / self.config.camera_fov
         current_x = int((0.5 + angle_offset) * w)
-        current_x = np.clip(current_x, 0, w - 1)
+        current_x = int(np.clip(a=current_x, a_min=0, a_max=w - 1))
         
-        cv2.line(frame, (current_x, 0), (current_x, h), (0, 255, 255), 2)
+        cv2.line(img=frame, pt1=(current_x, 0), pt2=(current_x, h), color=(255, 255, 0), thickness=2)
         cv2.putText(
-            frame, "SERVO", (current_x - 30, h - 10),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2
+            img=frame, 
+            text="SERVO", 
+            org=(current_x - 30, h - 10),
+            fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
+            fontScale=0.5, 
+            color=(255, 255, 0), 
+            thickness=2
         )
         
-        # Draw brightest point
+        # Draw brightest point - red
         if self.bright_x is not None and self.bright_y is not None:
-            cv2.circle(frame, (self.bright_x, self.bright_y), 20, (0, 0, 255), 3)
+            cv2.circle(img=frame, center=(self.bright_x, self.bright_y), radius=20, color=(255, 0, 0), thickness=3)
             cv2.putText(
-                frame, "BRIGHTEST", (self.bright_x - 40, self.bright_y - 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2
+                img=frame, 
+                text="BRIGHTEST", 
+                org=(self.bright_x - 40, self.bright_y - 30),
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
+                fontScale=0.6, 
+                color=(255, 0, 0), 
+                thickness=2
             )
             
-            # Draw line from current to target
+            # Draw line from current to target - green
             target_angle_offset = (self.target_angle - self.config.servo_center) / self.config.camera_fov
             target_x = int((0.5 + target_angle_offset) * w)
-            cv2.line(frame, (current_x, h // 2), (target_x, h // 2), (0, 255, 0), 2)
+            cv2.line(img=frame, pt1=(current_x, h // 2), pt2=(target_x, h // 2), color=(0, 255, 0), thickness=2)
         
         # Info panel
         overlay = frame.copy()
-        cv2.rectangle(overlay, (0, 0), (300, 120), (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+        cv2.rectangle(img=overlay, pt1=(0, 0), pt2=(300, 120), color=(0, 0, 0), thickness=-1)
+        cv2.addWeighted(src1=overlay, alpha=0.7, src2=frame, beta=0.3, gamma=0, dst=frame)
         
         y_pos = 25
-        cv2.putText(frame, "BRIGHTNESS TRACKER", (10, y_pos), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        cv2.putText(
+            img=frame, 
+            text="BRIGHTNESS TRACKER", 
+            org=(10, y_pos), 
+            fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
+            fontScale=0.6, 
+            color=(0, 255, 0), 
+            thickness=2
+        )
         y_pos += 30
         
-        cv2.putText(frame, f"FPS: {self.fps:.1f}", (10, y_pos),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(
+            img=frame, 
+            text=f"FPS: {self.fps:.1f}", 
+            org=(10, y_pos),
+            fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
+            fontScale=0.5, 
+            color=(255, 255, 255), 
+            thickness=1
+        )
         y_pos += 25
         
-        cv2.putText(frame, f"Servo: {self.current_angle:.1f}deg", (10, y_pos),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        cv2.putText(
+            img=frame, 
+            text=f"Servo: {self.current_angle:.1f}deg", 
+            org=(10, y_pos),
+            fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
+            fontScale=0.5, 
+            color=(255, 255, 0), 
+            thickness=1
+        )
         y_pos += 25
         
         if self.bright_x is not None:
-            cv2.putText(frame, f"Bright: ({self.bright_x}, {self.bright_y})", (10, y_pos),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+            cv2.putText(
+                img=frame, 
+                text=f"Bright: ({self.bright_x}, {self.bright_y})", 
+                org=(10, y_pos),
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
+                fontScale=0.5, 
+                color=(255, 0, 0), 
+                thickness=1
+            )
         else:
-            cv2.putText(frame, "No bright point", (10, y_pos),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1)
+            cv2.putText(
+                img=frame, 
+                text="No bright point", 
+                org=(10, y_pos),
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
+                fontScale=0.5, 
+                color=(128, 128, 128), 
+                thickness=1
+            )
         
         return frame
     
@@ -287,11 +343,11 @@ class BrightnessTracker:
         try:
             picam2 = Picamera2()
             
-            # Configure camera for regular RGB capture
+            # Configure camera for RGB capture
             config = picam2.create_preview_configuration(
                 main={
                     'size': (self.config.camera_width, self.config.camera_height),
-                    'format': 'RGB888'  # Request RGB format directly
+                    'format': 'RGB888'
                 }
             )
             
@@ -300,16 +356,13 @@ class BrightnessTracker:
             
             logger.info("Camera started - tracking brightest point!")
             
-            # Main loop
+            # Main loop - RGB ONLY
             while True:
-                # Capture frame (already in RGB format)
-                frame_rgb = picam2.capture_array()
+                # Capture frame in RGB
+                frame = picam2.capture_array()
                 
-                # Convert RGB to BGR for OpenCV
-                frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-                
-                # Update servo
-                self.update(frame=frame_bgr)
+                # Update servo with RGB frame
+                self.update(frame=frame)
                 
                 # Update FPS
                 self.frame_count += 1
@@ -318,10 +371,10 @@ class BrightnessTracker:
                     self.frame_count = 0
                     self.last_fps_time = time.time()
                 
-                # Draw visualization
-                vis_frame = self.draw_visualization(frame=frame_bgr)
+                # Draw visualization on RGB frame
+                vis_frame = self.draw_visualization(frame=frame)
                 
-                # Display
+                # Display RGB frame
                 cv2.imshow("Brightness Tracker", vis_frame)
                 
                 if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -345,11 +398,10 @@ def main() -> None:
     
     SETUP:
     1. Connect camera to RPi5
-    2. Connect servo to PCA9685 channel 0
+    2. Connect servo to ServoKit channel 0
     3. Run this script!
     
     The servo will track the brightest point in the scene.
-    Great for tracking flashlights, LEDs, or bright objects!
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -357,9 +409,8 @@ def main() -> None:
     )
     
     config = Config(
-        # Tune these for your servo
-        pulse_min=150,
-        pulse_max=600,
+        # Servo channel (adjust to match your wiring)
+        servo_channel=0,
         
         # PID tuning (adjust if too fast/slow/wobbly)
         kp=2.0,

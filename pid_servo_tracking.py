@@ -21,7 +21,9 @@ from typing import Protocol
 import numpy as np
 import cv2
 from pydantic import BaseModel, Field, ConfigDict, model_validator
-
+from adafruit_pca9685 import PCA9685
+from board import SCL, SDA
+import busio
 logger = logging.getLogger(__name__)
 
 
@@ -316,9 +318,7 @@ class ServoDriver:
     def _setup_hardware(self) -> None:
         """Initialize PCA9685 PWM driver."""
         try:
-            from adafruit_pca9685 import PCA9685
-            from board import SCL, SDA
-            import busio
+
             
             i2c = busio.I2C(scl=SCL, sda=SDA)
             self.pca9685 = PCA9685(i2c_bus=i2c, address=self.config.i2c_address)
