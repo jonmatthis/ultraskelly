@@ -114,6 +114,27 @@ class ServoDriver:
         """Set servo angle (0-180°)."""
         angle = np.clip(a=angle, a_min=0.0, a_max=180.0)
         self.kit.servo[self.config.servo_channel].angle = angle
+    
+    def test_servo(self) -> None:
+        """Test servo by sweeping through positions."""
+        logger.info("Testing servo movement...")
+        logger.info("Moving to center (90°)...")
+        self.set_angle(angle=90.0)
+        time.sleep(1.0)
+        
+        logger.info("Moving to left (60°)...")
+        self.set_angle(angle=60.0)
+        time.sleep(1.0)
+        
+        logger.info("Moving to right (120°)...")
+        self.set_angle(angle=120.0)
+        time.sleep(1.0)
+        
+        logger.info("Returning to center (90°)...")
+        self.set_angle(angle=90.0)
+        time.sleep(0.5)
+        
+        logger.info("✓ Servo test complete!")
 
 
 # ============================================================================
@@ -330,6 +351,10 @@ class BrightnessTracker:
         logger.info("=" * 50)
         logger.info("Brightness Tracker Started")
         logger.info("=" * 50)
+        
+        # Test servo first!
+        self.servo.test_servo()
+        
         logger.info(f"PID: Kp={self.config.kp}, Ki={self.config.ki}, Kd={self.config.kd}")
         logger.info("Press 'Q' to quit")
         
