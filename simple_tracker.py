@@ -24,8 +24,8 @@ BLUR_SIZE: int = 15
 # Control tuning
 PROPORTIONAL_GAIN: float = 0.3  # How aggressively to move (0.1 = gentle, 0.5 = aggressive)
 DEADZONE_PIXELS: int = 30  # Don't move servo if error is within this range
-SERVO_MIN: float = 30.0
-SERVO_MAX: float = 150.0
+SERVO_MIN: float = 0.0
+SERVO_MAX: float = 180.0
 
 
 # ============================================================================
@@ -96,7 +96,7 @@ def main() -> None:
     
     # Test servo
     logger.info("Testing servo...")
-    kit.servo[SERVO_CHANNEL].angle = 60.0
+    kit.servo[SERVO_CHANNEL].angle = 0.0
     time.sleep(0.5)
     kit.servo[SERVO_CHANNEL].angle = 120.0
     time.sleep(0.5)
