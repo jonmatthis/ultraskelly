@@ -1,6 +1,6 @@
 """
-Simple AI Camera Servo Tracking - No PubSub, Single Process
-Direct function calls for minimum latency
+Simple AI Camera Servo Tracking with Live Visualization
+Shows what the PID controller is doing in real-time!
 
 PID CONTROL OVERVIEW:
 ====================
@@ -19,6 +19,7 @@ import logging
 import time
 from typing import Protocol
 import numpy as np
+import cv2
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 logger = logging.getLogger(__name__)
@@ -132,6 +133,7 @@ class Detection(BaseModel):
     target_y: float = Field(ge=0.0, le=1.0, description="Y position (0=top, 1=bottom)")
     confidence: float = Field(ge=0.0, le=1.0, description="Detection confidence")
     class_name: str
+    box: list[float] = Field(description="Bounding box [x, y, width, height]")
 
 
 # ============================================================================
@@ -199,6 +201,12 @@ class PIDController:
         self.integral = 0.0      # Accumulated error over time (I term)
         self.last_error = 0.0    # Previous error (for D term calculation)
         self.last_time: float | None = None  # Previous timestamp
+        
+        # For visualization
+        self.last_p_term = 0.0
+        self.last_i_term = 0.0
+        self.last_d_term = 0.0
+        self.last_output = 0.0
     
     def update(self, setpoint: float, measurement: float, current_time: float) -> float:
         """
@@ -235,24 +243,11 @@ class PIDController:
         # ================================================================
         # P TERM: Proportional - "How far off am I?"
         # ================================================================
-        # The further you are from target, the harder you push.
-        # Example: If error = 10° and Kp = 3.0, then P = 30°/s
-        #
-        # This is like a rubber band pulling you toward the target.
-        # Stronger when stretched more (larger error).
         p_term = self.gains.kp * error
         
         # ================================================================
         # I TERM: Integral - "How long have I been off?"
         # ================================================================
-        # Accumulate error over time. This eliminates "steady-state error"
-        # (being stuck 2° off-target forever).
-        #
-        # Example: If you're consistently 2° too low for 5 seconds,
-        # integral builds up and adds constant upward push.
-        #
-        # Anti-windup: Clamp integral to prevent it growing infinitely.
-        # Without this, the integral can get huge and cause instability.
         self.integral += error * dt
         self.integral = np.clip(self.integral, -10.0, 10.0)  # Anti-windup limits
         i_term = self.gains.ki * self.integral
@@ -260,27 +255,20 @@ class PIDController:
         # ================================================================
         # D TERM: Derivative - "How fast am I changing?"
         # ================================================================
-        # Rate of change of error. This dampens motion and prevents overshoot.
-        # 
-        # Example: You're approaching target fast (error decreasing rapidly).
-        # D term applies brakes to slow you down before overshooting.
-        #
-        # Derivative = (current_error - last_error) / time_delta
-        # If error is decreasing (moving toward target), derivative is negative
-        # which creates a "braking" force.
         d_term = self.gains.kd * (error - self.last_error) / dt
         self.last_error = error
         
         # ================================================================
         # COMBINE ALL TERMS
         # ================================================================
-        # Total output is sum of P, I, and D terms.
-        # This is the velocity command (degrees per second).
         output = p_term + i_term + d_term
-        
-        # Clamp output to reasonable velocity limits
-        # (prevents commanding impossibly fast movements)
         output = np.clip(output, -30.0, 30.0)  # Max ±30°/s
+        
+        # Store for visualization
+        self.last_p_term = p_term
+        self.last_i_term = i_term
+        self.last_d_term = d_term
+        self.last_output = output
         
         return float(output)
     
@@ -294,6 +282,10 @@ class PIDController:
         self.integral = 0.0
         self.last_error = 0.0
         self.last_time = None
+        self.last_p_term = 0.0
+        self.last_i_term = 0.0
+        self.last_d_term = 0.0
+        self.last_output = 0.0
 
 
 # ============================================================================
@@ -383,12 +375,264 @@ class ServoDriver:
 
 
 # ============================================================================
+# Visualizer - Shows what's happening
+# ============================================================================
+
+class TrackingVisualizer:
+    """
+    Real-time visualization of the tracking system.
+    Shows detection, servo positions, and PID values.
+    """
+    
+    def __init__(self, config: SystemConfig):
+        self.config = config
+        self.window_name = "AI Servo Tracker - PID Control Visualization"
+        
+        # Colors (BGR format for OpenCV)
+        self.COLOR_GREEN = (0, 255, 0)
+        self.COLOR_RED = (0, 0, 255)
+        self.COLOR_BLUE = (255, 0, 0)
+        self.COLOR_YELLOW = (0, 255, 255)
+        self.COLOR_CYAN = (255, 255, 0)
+        self.COLOR_WHITE = (255, 255, 255)
+        self.COLOR_BLACK = (0, 0, 0)
+    
+    def draw_annotations(
+        self,
+        frame: np.ndarray,
+        detection: Detection | None,
+        current_pan: float,
+        current_tilt: float,
+        desired_pan: float,
+        desired_tilt: float,
+        pan_pid: PIDController,
+        tilt_pid: PIDController,
+        fps: float
+    ) -> np.ndarray:
+        """
+        Draw all annotations on the frame.
+        
+        Shows:
+        - Bounding box around detected object
+        - Crosshair at current servo aim point
+        - Target marker where servos want to go
+        - PID controller values
+        - FPS and status info
+        """
+        h, w = frame.shape[:2]
+        
+        # Create semi-transparent overlay for info panels
+        overlay = frame.copy()
+        
+        # ================================================================
+        # Draw detection bounding box and target
+        # ================================================================
+        if detection is not None:
+            # Bounding box
+            x, y, box_w, box_h = detection.box
+            x1 = int(x * w)
+            y1 = int(y * h)
+            x2 = int((x + box_w) * w)
+            y2 = int((y + box_h) * h)
+            
+            cv2.rectangle(frame, (x1, y1), (x2, y2), self.COLOR_GREEN, 2)
+            
+            # Target center (where object is)
+            target_x = int(detection.target_x * w)
+            target_y = int(detection.target_y * h)
+            
+            # Draw target marker (circle + crosshair)
+            cv2.circle(frame, (target_x, target_y), 10, self.COLOR_RED, 2)
+            cv2.line(frame, (target_x - 15, target_y), (target_x + 15, target_y), self.COLOR_RED, 2)
+            cv2.line(frame, (target_x, target_y - 15), (target_x, target_y + 15), self.COLOR_RED, 2)
+            
+            # Label
+            label = f"{detection.class_name} {detection.confidence:.2f}"
+            cv2.putText(frame, label, (x1, y1 - 10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, self.COLOR_GREEN, 2)
+        
+        # ================================================================
+        # Draw current aim point (where servos are pointing)
+        # ================================================================
+        # Convert servo angles back to screen coordinates
+        pan_offset_norm = (current_pan - self.config.servo.pan_center) / self.config.servo.fov_horizontal
+        tilt_offset_norm = -(current_tilt - self.config.servo.tilt_center) / self.config.servo.fov_vertical
+        
+        current_x = int((0.5 + pan_offset_norm) * w)
+        current_y = int((0.5 + tilt_offset_norm) * h)
+        
+        # Draw cyan crosshair (current position)
+        cv2.drawMarker(frame, (current_x, current_y), self.COLOR_CYAN, 
+                      cv2.MARKER_CROSS, 30, 2)
+        
+        # ================================================================
+        # Draw desired aim point (where servos want to go)
+        # ================================================================
+        if detection is not None:
+            desired_pan_offset_norm = (desired_pan - self.config.servo.pan_center) / self.config.servo.fov_horizontal
+            desired_tilt_offset_norm = -(desired_tilt - self.config.servo.tilt_center) / self.config.servo.fov_vertical
+            
+            desired_x = int((0.5 + desired_pan_offset_norm) * w)
+            desired_y = int((0.5 + desired_tilt_offset_norm) * h)
+            
+            # Draw yellow target (desired position)
+            cv2.circle(frame, (desired_x, desired_y), 8, self.COLOR_YELLOW, 2)
+            
+            # Draw line from current to desired
+            cv2.line(frame, (current_x, current_y), (desired_x, desired_y), 
+                    self.COLOR_YELLOW, 1, cv2.LINE_AA)
+        
+        # ================================================================
+        # Draw center reference
+        # ================================================================
+        center_x, center_y = w // 2, h // 2
+        cv2.circle(frame, (center_x, center_y), 5, self.COLOR_WHITE, 1)
+        
+        # ================================================================
+        # Info panel - Top left
+        # ================================================================
+        panel_height = 200
+        cv2.rectangle(overlay, (0, 0), (350, panel_height), self.COLOR_BLACK, -1)
+        cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+        
+        y_pos = 25
+        line_height = 25
+        
+        # Title
+        cv2.putText(frame, "SERVO TRACKER", (10, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, self.COLOR_GREEN, 2)
+        y_pos += line_height
+        
+        # FPS
+        cv2.putText(frame, f"FPS: {fps:.1f}", (10, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.COLOR_WHITE, 1)
+        y_pos += line_height
+        
+        # Servo positions
+        cv2.putText(frame, f"Pan:  {current_pan:6.1f}deg", (10, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.COLOR_CYAN, 1)
+        y_pos += line_height
+        
+        cv2.putText(frame, f"Tilt: {current_tilt:6.1f}deg", (10, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.COLOR_CYAN, 1)
+        y_pos += line_height
+        
+        # Detection status
+        if detection is not None:
+            cv2.putText(frame, f"Target: {detection.class_name}", (10, y_pos), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.COLOR_RED, 1)
+        else:
+            cv2.putText(frame, "No target", (10, y_pos), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.COLOR_WHITE, 1)
+        
+        # ================================================================
+        # PID values - Bottom left
+        # ================================================================
+        panel_y = h - 220
+        overlay2 = frame.copy()
+        cv2.rectangle(overlay2, (0, panel_y), (300, h), self.COLOR_BLACK, -1)
+        cv2.addWeighted(overlay2, 0.6, frame, 0.4, 0, frame)
+        
+        y_pos = panel_y + 25
+        
+        # Pan PID
+        cv2.putText(frame, "PAN PID:", (10, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.COLOR_YELLOW, 2)
+        y_pos += 20
+        
+        cv2.putText(frame, f"P: {pan_pid.last_p_term:+7.2f}", (15, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, self.COLOR_WHITE, 1)
+        y_pos += 18
+        
+        cv2.putText(frame, f"I: {pan_pid.last_i_term:+7.2f}", (15, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, self.COLOR_WHITE, 1)
+        y_pos += 18
+        
+        cv2.putText(frame, f"D: {pan_pid.last_d_term:+7.2f}", (15, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, self.COLOR_WHITE, 1)
+        y_pos += 18
+        
+        cv2.putText(frame, f"Out: {pan_pid.last_output:+7.2f}deg/s", (10, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, self.COLOR_CYAN, 1)
+        y_pos += 25
+        
+        # Tilt PID
+        cv2.putText(frame, "TILT PID:", (10, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.COLOR_YELLOW, 2)
+        y_pos += 20
+        
+        cv2.putText(frame, f"P: {tilt_pid.last_p_term:+7.2f}", (15, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, self.COLOR_WHITE, 1)
+        y_pos += 18
+        
+        cv2.putText(frame, f"I: {tilt_pid.last_i_term:+7.2f}", (15, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, self.COLOR_WHITE, 1)
+        y_pos += 18
+        
+        cv2.putText(frame, f"D: {tilt_pid.last_d_term:+7.2f}", (15, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, self.COLOR_WHITE, 1)
+        y_pos += 18
+        
+        cv2.putText(frame, f"Out: {tilt_pid.last_output:+7.2f}deg/s", (10, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, self.COLOR_CYAN, 1)
+        
+        # ================================================================
+        # Legend - Top right
+        # ================================================================
+        legend_x = w - 280
+        legend_y = 10
+        overlay3 = frame.copy()
+        cv2.rectangle(overlay3, (legend_x, legend_y), (w - 10, 120), self.COLOR_BLACK, -1)
+        cv2.addWeighted(overlay3, 0.6, frame, 0.4, 0, frame)
+        
+        y_pos = legend_y + 25
+        cv2.putText(frame, "LEGEND:", (legend_x + 10, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.COLOR_WHITE, 2)
+        y_pos += 22
+        
+        cv2.circle(frame, (legend_x + 20, y_pos - 5), 7, self.COLOR_RED, 2)
+        cv2.putText(frame, "Target detected", (legend_x + 35, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, self.COLOR_WHITE, 1)
+        y_pos += 20
+        
+        cv2.drawMarker(frame, (legend_x + 20, y_pos - 5), self.COLOR_CYAN, 
+                      cv2.MARKER_CROSS, 14, 2)
+        cv2.putText(frame, "Current aim", (legend_x + 35, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, self.COLOR_WHITE, 1)
+        y_pos += 20
+        
+        cv2.circle(frame, (legend_x + 20, y_pos - 5), 6, self.COLOR_YELLOW, 2)
+        cv2.putText(frame, "Desired aim", (legend_x + 35, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, self.COLOR_WHITE, 1)
+        
+        return frame
+    
+    def show(self, frame: np.ndarray) -> bool:
+        """
+        Display frame and handle keyboard input.
+        Returns False if user wants to quit.
+        """
+        cv2.imshow(self.window_name, frame)
+        key = cv2.waitKey(1) & 0xFF
+        
+        # Q or ESC to quit
+        if key == ord('q') or key == 27:
+            return False
+        
+        return True
+    
+    def close(self) -> None:
+        """Close visualization window."""
+        cv2.destroyAllWindows()
+
+
+# ============================================================================
 # Main Tracking System (Single Process)
 # ============================================================================
 
 class ServoTracker:
     """
-    Complete servo tracking system in a single process.
+    Complete servo tracking system in a single process with visualization.
     
     CONTROL LOOP:
     =============
@@ -397,19 +641,8 @@ class ServoTracker:
     3. PID calculates velocity to reach desired angles
     4. Update current angles using velocity × time
     5. Drive servos to new angles
-    6. Repeat at ~30 Hz
-    
-    COORDINATE SYSTEMS:
-    ===================
-    Detection: (x, y) normalized 0.0-1.0
-    - (0.5, 0.5) = center of frame
-    - (0.0, 0.0) = top-left
-    - (1.0, 1.0) = bottom-right
-    
-    Servo angles: degrees
-    - 90° = center (looking straight)
-    - 0° = left/down limit
-    - 180° = right/up limit
+    6. Display everything on screen
+    7. Repeat at ~30 Hz
     """
     
     def __init__(self, config: SystemConfig):
@@ -419,11 +652,21 @@ class ServoTracker:
         self.servo_driver = ServoDriver(config=config.servo)
         self.pan_pid = PIDController(gains=config.pan_pid)
         self.tilt_pid = PIDController(gains=config.tilt_pid)
+        self.visualizer = TrackingVisualizer(config=config)
         
         # Current servo positions (start at center)
         self.current_pan = config.servo.pan_center
         self.current_tilt = config.servo.tilt_center
+        self.desired_pan = config.servo.pan_center
+        self.desired_tilt = config.servo.tilt_center
         self.running = False
+        
+        # For visualization
+        self.latest_frame = None
+        self.latest_detection = None
+        self.frame_count = 0
+        self.last_fps_time = time.time()
+        self.current_fps = 0.0
         
         # COCO class names (what objects the AI can detect)
         self.class_names = [
@@ -438,9 +681,8 @@ class ServoTracker:
         Extract best detection from IMX500 results.
         
         IMX500 returns list of detections, each formatted as:
-        [y0, x0, y1, x1, confidence, class_id]
-        
-        We pick the detection with highest confidence.
+        [category, confidence, box]
+        where box is [x, y, width, height] normalized 0-1
         """
         if not results:
             return None
@@ -449,10 +691,13 @@ class ServoTracker:
         best_confidence = 0.0
         
         for detection in results:
-            if len(detection) < 6:
+            # IMX500 format: each detection is [category, confidence, box]
+            if len(detection) < 3:
                 continue
             
-            y0, x0, y1, x1, confidence, class_id = detection[:6]
+            category = int(detection[0])
+            confidence = float(detection[1])
+            box = detection[2]  # [x, y, width, height]
             
             # Filter by confidence threshold
             if confidence < self.config.confidence_threshold:
@@ -463,43 +708,24 @@ class ServoTracker:
                 best_confidence = confidence
                 
                 # Calculate center of bounding box
-                center_x = (x0 + x1) / 2.0
-                center_y = (y0 + y1) / 2.0
+                center_x = box[0] + box[2] / 2.0
+                center_y = box[1] + box[3] / 2.0
                 
                 # Map class ID to name
-                class_name = self.class_names[int(class_id)] if int(class_id) < len(self.class_names) else 'unknown'
+                class_name = self.class_names[category] if category < len(self.class_names) else 'unknown'
                 
                 best_detection = Detection(
                     target_x=center_x,
                     target_y=center_y,
                     confidence=confidence,
-                    class_name=class_name
+                    class_name=class_name,
+                    box=list(box)
                 )
         
         return best_detection
     
     def detection_to_angles(self, detection: Detection) -> tuple[float, float]:
-        """
-        Convert detection position to desired servo angles.
-        
-        COORDINATE TRANSFORMATION:
-        ==========================
-        Detection gives us (x, y) where (0.5, 0.5) is frame center.
-        We need to convert this to servo angles.
-        
-        Steps:
-        1. Calculate offset from center: (x - 0.5)
-        2. Scale by camera FOV: offset × FOV_degrees
-        3. Add to servo center position
-        
-        Example:
-        - Detection at x=0.75 (right side of frame)
-        - Offset = 0.75 - 0.5 = 0.25
-        - Pan offset = 0.25 × 78.3° = 19.6°
-        - Desired pan = 90° + 19.6° = 109.6°
-        
-        Note: Y is inverted (0 = top in image, but servos increase downward)
-        """
+        """Convert detection position to desired servo angles."""
         # Calculate angle offset from center
         pan_offset = (detection.target_x - 0.5) * self.config.servo.fov_horizontal
         tilt_offset = -(detection.target_y - 0.5) * self.config.servo.fov_vertical  # Invert Y
@@ -508,57 +734,33 @@ class ServoTracker:
         desired_pan = self.config.servo.pan_center + pan_offset
         desired_tilt = self.config.servo.tilt_center + tilt_offset
         
-        # Clamp to servo limits (can't move beyond mechanical limits)
+        # Clamp to servo limits
         desired_pan = np.clip(desired_pan, self.config.servo.pan_min, self.config.servo.pan_max)
         desired_tilt = np.clip(desired_tilt, self.config.servo.tilt_min, self.config.servo.tilt_max)
         
         return float(desired_pan), float(desired_tilt)
     
     def update_servos(self, detection: Detection) -> None:
-        """
-        Update servo positions based on detection using PID control.
-        
-        THE CONTROL LOOP:
-        =================
-        1. Calculate where we WANT to be (desired angles)
-        2. Calculate where we ARE now (current angles)
-        3. PID calculates how fast to move (velocity)
-        4. Update position: new_position = old_position + velocity × time
-        5. Drive servos to new position
-        
-        WHY USE VELOCITY CONTROL?
-        =========================
-        We could just set servos to desired_angle directly, but this causes:
-        - Jerky motion (instant position changes)
-        - Overshooting (servo momentum)
-        - Oscillation (back-and-forth wobbling)
-        
-        Instead, PID calculates a smooth velocity that:
-        - Moves fast when far from target (large P term)
-        - Slows down as we approach (D term dampening)
-        - Eliminates steady-state error (I term)
-        """
+        """Update servo positions based on detection using PID control."""
         # Step 1: Calculate desired servo angles from detection
-        desired_pan, desired_tilt = self.detection_to_angles(detection=detection)
+        self.desired_pan, self.desired_tilt = self.detection_to_angles(detection=detection)
         
         current_time = time.time()
         
         # Step 2: Calculate velocities using PID
-        # PID output is in degrees/second
         pan_velocity = self.pan_pid.update(
-            setpoint=desired_pan,       # Where we want to be
-            measurement=self.current_pan,  # Where we are now
+            setpoint=self.desired_pan,
+            measurement=self.current_pan,
             current_time=current_time
         )
         
         tilt_velocity = self.tilt_pid.update(
-            setpoint=desired_tilt,
+            setpoint=self.desired_tilt,
             measurement=self.current_tilt,
             current_time=current_time
         )
         
         # Step 3: Update positions using velocity
-        # new_position = old_position + velocity × time
         dt = 0.033  # Time delta (30 Hz update rate)
         self.current_pan += pan_velocity * dt
         self.current_tilt += tilt_velocity * dt
@@ -579,89 +781,103 @@ class ServoTracker:
         self.servo_driver.set_angles(pan=self.current_pan, tilt=self.current_tilt)
     
     def run(self) -> None:
-        """
-        Main tracking loop.
-        
-        PIPELINE:
-        =========
-        AI Camera (IMX500) → Detection → PID Control → Servo Driver
-        
-        This all runs in ONE process at ~30 FPS with minimal latency.
-        """
+        """Main tracking loop with visualization."""
         from picamera2 import Picamera2
-        from picamera2.devices import Hailo
+        from picamera2.devices.imx500 import IMX500, NetworkIntrinsics
         
         self.running = True
         logger.info("=" * 60)
-        logger.info("Servo Tracker Started")
+        logger.info("Servo Tracker Started (IMX500 On-Sensor AI)")
         logger.info("=" * 60)
         logger.info(f"Camera: {self.config.camera_width}x{self.config.camera_height} @ {self.config.camera_fps} FPS")
         logger.info(f"Model: {self.config.model_path}")
         logger.info(f"PID Gains - Pan: Kp={self.config.pan_pid.kp}, Ki={self.config.pan_pid.ki}, Kd={self.config.pan_pid.kd}")
         logger.info(f"PID Gains - Tilt: Kp={self.config.tilt_pid.kp}, Ki={self.config.tilt_pid.ki}, Kd={self.config.tilt_pid.kd}")
         logger.info("=" * 60)
+        logger.info("Press 'Q' or 'ESC' to quit")
         
         try:
-            with Picamera2() as picam2:
+            # Initialize IMX500
+            intrinsics = NetworkIntrinsics()
+            intrinsics.task = "object detection"
+            
+            imx500 = IMX500(self.config.model_path)
+            imx500.set_auto_aspect_ratio()
+            
+            with Picamera2(imx500.camera_num) as picam2:
                 # Configure camera
-                main_config = {
-                    'size': (self.config.camera_width, self.config.camera_height),
-                    'format': 'XRGB8888'
-                }
-                lores_config = {
-                    'size': (320, 320),  # Model input size
-                    'format': 'RGB888'
-                }
-                controls = {'FrameRate': self.config.camera_fps}
-                
                 config = picam2.create_preview_configuration(
-                    main=main_config,
-                    lores=lores_config,
-                    controls=controls
+                    main={'size': (self.config.camera_width, self.config.camera_height), 'format': 'XRGB8888'},
+                    controls={'FrameRate': self.config.camera_fps}
                 )
-                picam2.configure(config=config)
                 
-                # Load IMX500 AI model (runs on-sensor!)
-                with Hailo(self.config.model_path) as hailo:
-                    picam2.start()
-                    logger.info("Camera started - AI running on-sensor (zero CPU load!)")
+                # Attach IMX500 for on-sensor inference
+                imx500.show_network_fw_progress_bar()
+                picam2.configure(config)
+                
+                # Set up callback to receive detections
+                def callback(request):
+                    # Get frame
+                    self.latest_frame = request.make_array('main')
                     
-                    frame_count = 0
-                    last_log_time = time.time()
+                    # Get detections from metadata
+                    metadata = request.get_metadata()
+                    if 'ImxResults' in metadata:
+                        results = metadata['ImxResults']
+                        self.latest_detection = self.extract_detection(results=results)
+                        
+                        if self.latest_detection is not None:
+                            self.update_servos(detection=self.latest_detection)
+                    else:
+                        self.latest_detection = None
                     
-                    # Main loop - runs at camera FPS (~30 Hz)
-                    while self.running:
-                        # Capture frame (low-res for inference)
-                        frame = picam2.capture_array('lores')
+                    # Update FPS
+                    self.frame_count += 1
+                    if time.time() - self.last_fps_time >= 1.0:
+                        self.current_fps = self.frame_count / (time.time() - self.last_fps_time)
+                        self.frame_count = 0
+                        self.last_fps_time = time.time()
+                
+                picam2.post_callback = callback
+                picam2.start()
+                
+                logger.info("Camera started - AI running on-sensor!")
+                logger.info("Visualization window opened")
+                
+                # Main visualization loop
+                while self.running:
+                    if self.latest_frame is not None:
+                        # Convert XRGB to BGR for OpenCV
+                        frame_bgr = cv2.cvtColor(self.latest_frame, cv2.COLOR_RGB2BGR)
                         
-                        # Run AI detection (happens ON THE CAMERA SENSOR!)
-                        results = hailo.run(frame)
+                        # Draw annotations
+                        annotated_frame = self.visualizer.draw_annotations(
+                            frame=frame_bgr,
+                            detection=self.latest_detection,
+                            current_pan=self.current_pan,
+                            current_tilt=self.current_tilt,
+                            desired_pan=self.desired_pan,
+                            desired_tilt=self.desired_tilt,
+                            pan_pid=self.pan_pid,
+                            tilt_pid=self.tilt_pid,
+                            fps=self.current_fps
+                        )
                         
-                        # Extract best detection
-                        detection = self.extract_detection(results=results)
-                        
-                        if detection is not None:
-                            # Update servos using PID control
-                            # This is where the magic happens!
-                            self.update_servos(detection=detection)
-                        
-                        # Periodic logging
-                        frame_count += 1
-                        if time.time() - last_log_time >= 5.0:
-                            fps = frame_count / 5.0
-                            logger.info(
-                                f"FPS: {fps:.1f} | "
-                                f"Pan: {self.current_pan:.1f}° | "
-                                f"Tilt: {self.current_tilt:.1f}°"
-                            )
-                            frame_count = 0
-                            last_log_time = time.time()
+                        # Display
+                        if not self.visualizer.show(frame=annotated_frame):
+                            logger.info("User quit visualization")
+                            break
+                    
+                    time.sleep(0.01)
         
         except KeyboardInterrupt:
             logger.info("\nInterrupted by user")
+        except Exception as e:
+            logger.error(f"Error in tracking loop: {e}", exc_info=True)
         finally:
             self.running = False
             self.servo_driver.close()
+            self.visualizer.close()
             logger.info("Servo Tracker stopped")
     
     def stop(self) -> None:
@@ -675,7 +891,7 @@ class ServoTracker:
 
 def main() -> None:
     """
-    Run the simple servo tracker.
+    Run the servo tracker with visualization.
     
     QUICK START:
     ============
@@ -685,17 +901,29 @@ def main() -> None:
     4. Power servos externally (5-6V)
     5. Run this script!
     
+    VISUALIZATION:
+    ==============
+    - RED circle: Target detected by AI
+    - CYAN crosshair: Where servos are currently pointing
+    - YELLOW circle: Where servos want to go
+    - Yellow line: Path from current to desired
+    - PID values shown in real-time at bottom
+    
+    Press 'Q' or 'ESC' to quit
+    
     TUNING TIPS:
     ============
+    Watch the PID values in the visualization!
+    
     If servos wobble/oscillate:
-    - Reduce Kp (make it less aggressive)
-    - Increase Kd (more dampening)
+    - P term is too large → Reduce Kp
+    - Not enough dampening → Increase Kd
     
     If servos are too slow:
-    - Increase Kp (faster response)
+    - P term is too small → Increase Kp
     
     If servos drift slightly off-target:
-    - Add small Ki (eliminate steady-state error)
+    - I term needed → Add small Ki
     """
     logging.basicConfig(
         level=logging.INFO,
