@@ -1,6 +1,6 @@
 """
-Simple Hand Tracking with One Servo
-Just centers a detected hand horizontally in the frame!
+Simple Brightness Tracking with One Servo
+Tracks the brightest point in the scene - no AI needed!
 """
 import logging
 import time
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 class Config(BaseModel):
-    """Simple configuration for single-servo hand tracking."""
+    """Simple configuration for brightness tracking."""
     
     # Servo settings
     servo_channel: int = Field(default=0, description="PWM channel (0-15)")
@@ -34,24 +34,16 @@ class Config(BaseModel):
     camera_height: int = Field(default=480)
     camera_fov: float = Field(default=78.3, description="Horizontal field of view")
     
-    # Hand detection model
-    model_path: str = Field(
-        default="/usr/share/imx500-models/imx500_network_hand_detection.rpk"
-    )
+    # Brightness detection
+    blur_size: int = Field(default=15, description="Gaussian blur kernel size (odd number)")
 
 
 # ============================================================================
-# PID Controller - Smooth Tracking
+# PID Controller
 # ============================================================================
 
 class PIDController:
-    """
-    Simple PID controller.
-    
-    P: "How far am I from target?"
-    I: "How long have I been off?"
-    D: "How fast am I moving?"
-    """
+    """Simple PID controller."""
     
     def __init__(self, kp: float, ki: float, kd: float):
         self.kp = kp
@@ -95,7 +87,7 @@ class PIDController:
         return float(velocity)
     
     def reset(self) -> None:
-        """Reset state when losing target."""
+        """Reset state."""
         self.integral = 0.0
         self.last_error = 0.0
         self.last_time = None
@@ -142,11 +134,11 @@ class ServoDriver:
 
 
 # ============================================================================
-# Hand Tracker
+# Brightness Tracker
 # ============================================================================
 
-class HandTracker:
-    """Single-servo hand tracking system."""
+class BrightnessTracker:
+    """Tracks the brightest point in the scene."""
     
     def __init__(self, config: Config):
         self.config = config
@@ -156,27 +148,55 @@ class HandTracker:
         # Current state
         self.current_angle = config.servo_center
         self.target_angle = config.servo_center
-        self.hand_x: float | None = None
+        self.bright_x: int | None = None
+        self.bright_y: int | None = None
         
         # Visualization
         self.frame_count = 0
         self.last_fps_time = time.time()
         self.fps = 0.0
     
-    def update(self, hand_x: float | None) -> None:
-        """Update servo based on detected hand position."""
-        if hand_x is None:
-            # No hand detected - reset PID
+    def find_brightest_point(self, frame: np.ndarray) -> tuple[int, int] | None:
+        """
+        Find the brightest point in the frame.
+        
+        Returns (x, y) coordinates or None if no bright point found.
+        """
+        # Convert to grayscale
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # Apply Gaussian blur to reduce noise
+        blurred = cv2.GaussianBlur(gray, (self.config.blur_size, self.config.blur_size), 0)
+        
+        # Find the brightest point
+        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(blurred)
+        
+        # Only track if brightness is above threshold (avoid tracking dark scenes)
+        if max_val > 100:  # Adjust threshold as needed
+            return max_loc  # (x, y)
+        
+        return None
+    
+    def update(self, frame: np.ndarray) -> None:
+        """Update servo based on brightest point."""
+        point = self.find_brightest_point(frame=frame)
+        
+        if point is None:
+            # No bright point - reset PID
             self.pid.reset()
-            self.hand_x = None
+            self.bright_x = None
+            self.bright_y = None
             return
         
         # Store for visualization
-        self.hand_x = hand_x
+        self.bright_x, self.bright_y = point
         
-        # Convert normalized x position (0-1) to target angle
-        # hand_x = 0.5 should be center (servo_center degrees)
-        x_offset = (hand_x - 0.5) * self.config.camera_fov
+        # Convert pixel position to normalized position (0-1)
+        h, w = frame.shape[:2]
+        norm_x = self.bright_x / w
+        
+        # Convert to target angle
+        x_offset = (norm_x - 0.5) * self.config.camera_fov
         self.target_angle = self.config.servo_center + x_offset
         self.target_angle = np.clip(self.target_angle, 0.0, 180.0)
         
@@ -214,12 +234,11 @@ class HandTracker:
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2
         )
         
-        # Draw detected hand position
-        if self.hand_x is not None:
-            hand_pixel_x = int(self.hand_x * w)
-            cv2.circle(frame, (hand_pixel_x, h // 2), 20, (0, 0, 255), 3)
+        # Draw brightest point
+        if self.bright_x is not None and self.bright_y is not None:
+            cv2.circle(frame, (self.bright_x, self.bright_y), 20, (0, 0, 255), 3)
             cv2.putText(
-                frame, "HAND", (hand_pixel_x - 25, h // 2 - 30),
+                frame, "BRIGHTEST", (self.bright_x - 40, self.bright_y - 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2
             )
             
@@ -234,8 +253,8 @@ class HandTracker:
         cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
         
         y_pos = 25
-        cv2.putText(frame, "HAND TRACKER", (10, y_pos), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(frame, "BRIGHTNESS TRACKER", (10, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         y_pos += 30
         
         cv2.putText(frame, f"FPS: {self.fps:.1f}", (10, y_pos),
@@ -246,11 +265,11 @@ class HandTracker:
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
         y_pos += 25
         
-        if self.hand_x is not None:
-            cv2.putText(frame, f"Hand: {self.hand_x:.2f}", (10, y_pos),
+        if self.bright_x is not None:
+            cv2.putText(frame, f"Bright: ({self.bright_x}, {self.bright_y})", (10, y_pos),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
         else:
-            cv2.putText(frame, "No hand", (10, y_pos),
+            cv2.putText(frame, "No bright point", (10, y_pos),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1)
         
         return frame
@@ -258,91 +277,62 @@ class HandTracker:
     def run(self) -> None:
         """Main tracking loop."""
         from picamera2 import Picamera2
-        from picamera2.devices.imx500 import IMX500
         
         logger.info("=" * 50)
-        logger.info("Hand Tracker Started")
+        logger.info("Brightness Tracker Started")
         logger.info("=" * 50)
         logger.info(f"PID: Kp={self.config.kp}, Ki={self.config.ki}, Kd={self.config.kd}")
         logger.info("Press 'Q' to quit")
         
         try:
-            # Set up camera with hand detection
-            imx500 = IMX500(self.config.model_path)
-            imx500.set_auto_aspect_ratio()
+            picam2 = Picamera2()
             
-            with Picamera2(imx500.camera_num) as picam2:
-                config = picam2.create_preview_configuration(
-                    main={
-                        'size': (self.config.camera_width, self.config.camera_height),
-                        'format': 'XRGB8888'
-                    },
-                    controls={'FrameRate': 30}
-                )
+            # Configure camera for regular RGB capture
+            config = picam2.create_preview_configuration(
+                main={
+                    'size': (self.config.camera_width, self.config.camera_height),
+                    'format': 'RGB888'  # Request RGB format directly
+                }
+            )
+            
+            picam2.configure(config)
+            picam2.start()
+            
+            logger.info("Camera started - tracking brightest point!")
+            
+            # Main loop
+            while True:
+                # Capture frame (already in RGB format)
+                frame_rgb = picam2.capture_array()
                 
-                imx500.show_network_fw_progress_bar()
-                picam2.configure(config)
+                # Convert RGB to BGR for OpenCV
+                frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
                 
-                latest_frame = None
-                latest_hand_x = None
+                # Update servo
+                self.update(frame=frame_bgr)
                 
-                def callback(request) -> None:
-                    nonlocal latest_frame, latest_hand_x
-                    
-                    # Get frame
-                    latest_frame = request.make_array('main')
-                    
-                    # Get hand detection
-                    metadata = request.get_metadata()
-                    latest_hand_x = None
-                    
-                    if 'ImxResults' in metadata:
-                        results = metadata['ImxResults']
-                        if results and len(results) > 0:
-                            # Get first hand detection
-                            detection = results[0]
-                            if len(detection) >= 3:
-                                box = detection[2]  # [x, y, width, height]
-                                # Calculate center x
-                                latest_hand_x = float(box[0] + box[2] / 2.0)
-                    
-                    # Update servo
-                    self.update(hand_x=latest_hand_x)
-                    
-                    # Update FPS
-                    self.frame_count += 1
-                    if time.time() - self.last_fps_time >= 1.0:
-                        self.fps = self.frame_count / (time.time() - self.last_fps_time)
-                        self.frame_count = 0
-                        self.last_fps_time = time.time()
+                # Update FPS
+                self.frame_count += 1
+                if time.time() - self.last_fps_time >= 1.0:
+                    self.fps = self.frame_count / (time.time() - self.last_fps_time)
+                    self.frame_count = 0
+                    self.last_fps_time = time.time()
                 
-                picam2.post_callback = callback
-                picam2.start()
+                # Draw visualization
+                vis_frame = self.draw_visualization(frame=frame_bgr)
                 
-                logger.info("Camera started - looking for hands!")
+                # Display
+                cv2.imshow("Brightness Tracker", vis_frame)
                 
-                # Visualization loop
-                while True:
-                    if latest_frame is not None:
-                        # Convert to BGR
-                        frame_bgr = cv2.cvtColor(latest_frame, cv2.COLOR_RGB2BGR)
-                        
-                        # Draw visualization
-                        vis_frame = self.draw_visualization(frame=frame_bgr)
-                        
-                        # Display
-                        cv2.imshow("Hand Tracker", vis_frame)
-                        
-                        if cv2.waitKey(1) & 0xFF == ord('q'):
-                            break
-                    
-                    time.sleep(0.01)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
         
         except KeyboardInterrupt:
             logger.info("\nStopped by user")
         finally:
+            picam2.stop()
             cv2.destroyAllWindows()
-            logger.info("Hand Tracker stopped")
+            logger.info("Brightness Tracker stopped")
 
 
 # ============================================================================
@@ -351,15 +341,15 @@ class HandTracker:
 
 def main() -> None:
     """
-    Run the hand tracker!
+    Run the brightness tracker!
     
     SETUP:
-    1. Connect AI Camera to RPi5
+    1. Connect camera to RPi5
     2. Connect servo to PCA9685 channel 0
-    3. Make sure hand detection model is installed
-    4. Run this script!
+    3. Run this script!
     
-    The servo will try to keep any detected hand centered in the frame.
+    The servo will track the brightest point in the scene.
+    Great for tracking flashlights, LEDs, or bright objects!
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -374,10 +364,13 @@ def main() -> None:
         # PID tuning (adjust if too fast/slow/wobbly)
         kp=2.0,
         ki=0.1,
-        kd=0.5
+        kd=0.5,
+        
+        # Blur size (larger = smoother tracking, smaller = more responsive)
+        blur_size=15
     )
     
-    tracker = HandTracker(config=config)
+    tracker = BrightnessTracker(config=config)
     tracker.run()
 
 
