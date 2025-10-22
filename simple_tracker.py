@@ -22,6 +22,9 @@ class Config(BaseModel):
     servo_channel: int = Field(default=0, description="PWM channel (0-15)")
     servo_center: float = Field(default=90.0, description="Center position (degrees)")
     
+    # Control mode
+    direct_mode: bool = Field(default=False, description="If True, skip PID and directly set servo angle")
+    
     # PID tuning
     kp: float = Field(default=2.0, description="Proportional gain")
     ki: float = Field(default=0.1, description="Integral gain")
@@ -212,16 +215,24 @@ class BrightnessTracker:
         self.target_angle = self.config.servo_center + x_offset
         self.target_angle = np.clip(a=self.target_angle, a_min=0.0, a_max=180.0)
         
-        # Calculate velocity using PID
-        velocity = self.pid.update(target=self.target_angle, current=self.current_angle)
-        
-        # Update position
-        dt = 0.033  # ~30 Hz
-        self.current_angle += velocity * dt
-        self.current_angle = float(np.clip(a=self.current_angle, a_min=0.0, a_max=180.0))
-        
-        # Drive servo
-        self.servo.set_angle(angle=self.current_angle)
+        if self.config.direct_mode:
+            # DIRECT MODE: Just set the servo to target angle immediately
+            self.current_angle = self.target_angle
+            logger.debug(f"DIRECT MODE - Setting servo to: {self.current_angle:.1f}°")
+            self.servo.set_angle(angle=self.current_angle)
+        else:
+            # PID MODE: Use smooth control
+            # Calculate velocity using PID
+            velocity = self.pid.update(target=self.target_angle, current=self.current_angle)
+            
+            # Update position
+            dt = 0.033  # ~30 Hz
+            self.current_angle += velocity * dt
+            self.current_angle = float(np.clip(a=self.current_angle, a_min=0.0, a_max=180.0))
+            
+            # Drive servo
+            logger.debug(f"Target: {self.target_angle:.1f}° | Current: {self.current_angle:.1f}° | Velocity: {velocity:.2f}°/s")
+            self.servo.set_angle(angle=self.current_angle)
     
     def draw_visualization(self, frame: np.ndarray) -> np.ndarray:
         """
@@ -355,7 +366,10 @@ class BrightnessTracker:
         # Test servo first!
         self.servo.test_servo()
         
-        logger.info(f"PID: Kp={self.config.kp}, Ki={self.config.ki}, Kd={self.config.kd}")
+        if self.config.direct_mode:
+            logger.info("MODE: DIRECT (servo follows target immediately)")
+        else:
+            logger.info(f"MODE: PID (Kp={self.config.kp}, Ki={self.config.ki}, Kd={self.config.kd})")
         logger.info("Press 'Q' to quit")
         
         try:
@@ -422,7 +436,7 @@ def main() -> None:
     The servo will track the brightest point in the scene.
     """
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG,  # Changed to DEBUG to see servo commands
         format='%(asctime)s - %(message)s'
     )
     
@@ -430,7 +444,11 @@ def main() -> None:
         # Servo channel (adjust to match your wiring)
         servo_channel=0,
         
-        # PID tuning (adjust if too fast/slow/wobbly)
+        # DIRECT MODE: Set to True to bypass PID and directly control servo
+        # Use this to verify servo is actually moving during tracking!
+        direct_mode=True,
+        
+        # PID tuning (only used if direct_mode=False)
         kp=2.0,
         ki=0.1,
         kd=0.5,
