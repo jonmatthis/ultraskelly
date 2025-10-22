@@ -105,22 +105,15 @@ class ServoDriver:
     
     def _setup(self) -> None:
         """Initialize hardware."""
-        try:
-            from adafruit_servokit import ServoKit
-            
-            self.kit = ServoKit(channels=16)
-            logger.info("Servo initialized via ServoKit")
-        except Exception as e:
-            logger.warning(f"No hardware: {e}")
+        from adafruit_servokit import ServoKit
+        
+        self.kit = ServoKit(channels=16)
+        logger.info("Servo initialized via ServoKit")
     
     def set_angle(self, angle: float) -> None:
         """Set servo angle (0-180°)."""
         angle = np.clip(a=angle, a_min=0.0, a_max=180.0)
-        
-        if self.kit is not None:
-            self.kit.servo[self.config.servo_channel].angle = angle
-        else:
-            logger.debug(f"[SIM] Servo={angle:.1f}°")
+        self.kit.servo[self.config.servo_channel].angle = angle
 
 
 # ============================================================================
