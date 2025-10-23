@@ -1,4 +1,30 @@
-"""
+def main() -> None:
+    """Run the simple tracker."""
+    logger.info("="*60)
+    logger.info("2-AXIS BRIGHTNESS TRACKER")
+    logger.info("="*60)
+    
+    # Initialize servos
+    kit = ServoKit(channels=16)
+    pan_angle = 90.0
+    tilt_angle = 90.0
+    kit.servo[PAN_SERVO_CHANNEL].angle = pan_angle
+    kit.servo[TILT_SERVO_CHANNEL].angle = tilt_angle
+    
+    # Test servos
+    logger.info("Testing servos...")
+    logger.info("Pan left...")
+    kit.servo[PAN_SERVO_CHANNEL].angle = 60.0
+    time.sleep(0.5)
+    logger.info("Pan right...")
+    kit.servo[PAN_SERVO_CHANNEL].angle = 120.0
+    time.sleep(0.5)
+    logger.info("Pan center...")
+    kit.servo[PAN_SERVO_CHANNEL].angle = 90.0
+    time.sleep(0.5)
+    
+    logger.info("Tilt up...")
+    kit.servo["""
 Dead Simple Brightness Tracker
 Just proportional control - bright point off center? Move servo towards it. Done.
 """
@@ -16,16 +42,20 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # Configuration
 # ============================================================================
-SERVO_CHANNEL: int = 0
+PAN_SERVO_CHANNEL: int = 0   # Horizontal movement
+TILT_SERVO_CHANNEL: int = 7  # Vertical movement
+
 CAMERA_WIDTH: int = 640
 CAMERA_HEIGHT: int = 480
 BLUR_SIZE: int = 15
 
 # Control tuning
-PROPORTIONAL_GAIN: float = 0.3  # How aggressively to move (0.1 = gentle, 0.5 = aggressive)
+PROPORTIONAL_GAIN: float = 0.05 # How aggressively to move (0.1 = gentle, 0.5 = aggressive)
 DEADZONE_PIXELS: int = 30  # Don't move servo if error is within this range
-SERVO_MIN: float = 0.0
-SERVO_MAX: float = 180.0
+PAN_MIN: float = 30.0
+PAN_MAX: float = 150.0
+TILT_MIN: float = 30.0
+TILT_MAX: float = 150.0
 
 
 # ============================================================================
@@ -44,40 +74,53 @@ def find_brightest_point(frame: np.ndarray) -> tuple[int, int] | None:
 
 
 def draw_visualization(frame: np.ndarray, bright_x: int | None, bright_y: int | None, 
-                       servo_angle: float, fps: float, is_locked: bool = False) -> np.ndarray:
+                       pan_angle: float, tilt_angle: float, fps: float, 
+                       is_locked_x: bool = False, is_locked_y: bool = False) -> np.ndarray:
     """Draw simple visualization."""
     h, w = frame.shape[:2]
     center_x = w // 2
+    center_y = h // 2
     
-    # Center line (white)
+    # Center crosshair (white)
     cv2.line(img=frame, pt1=(center_x, 0), pt2=(center_x, h), color=(255, 255, 255), thickness=2)
+    cv2.line(img=frame, pt1=(0, center_y), pt2=(w, center_y), color=(255, 255, 255), thickness=2)
     
     # Deadzone visualization (light gray box)
     deadzone_left = center_x - DEADZONE_PIXELS
     deadzone_right = center_x + DEADZONE_PIXELS
-    cv2.rectangle(img=frame, pt1=(deadzone_left, 0), pt2=(deadzone_right, h), 
+    deadzone_top = center_y - DEADZONE_PIXELS
+    deadzone_bottom = center_y + DEADZONE_PIXELS
+    cv2.rectangle(img=frame, pt1=(deadzone_left, deadzone_top), pt2=(deadzone_right, deadzone_bottom), 
                   color=(128, 128, 128), thickness=1)
     
-    # Brightest point (red circle, green if locked)
+    # Brightest point (red circle, green if both axes locked)
     if bright_x is not None and bright_y is not None:
-        color = (0, 255, 0) if is_locked else (255, 0, 0)
+        color = (0, 255, 0) if (is_locked_x and is_locked_y) else (255, 0, 0)
         cv2.circle(img=frame, center=(bright_x, bright_y), radius=20, color=color, thickness=3)
-        cv2.line(img=frame, pt1=(center_x, h // 2), pt2=(bright_x, h // 2), color=color, thickness=2)
+        
+        # Draw crosshair from center to bright point
+        line_color_x = (0, 255, 0) if is_locked_x else (255, 255, 0)
+        line_color_y = (0, 255, 0) if is_locked_y else (255, 255, 0)
+        cv2.line(img=frame, pt1=(center_x, bright_y), pt2=(bright_x, bright_y), color=line_color_x, thickness=2)
+        cv2.line(img=frame, pt1=(bright_x, center_y), pt2=(bright_x, bright_y), color=line_color_y, thickness=2)
     
     # Info
-    status = "LOCKED" if is_locked else "TRACKING"
-    status_color = (0, 255, 0) if is_locked else (255, 255, 0)
+    status = "LOCKED" if (is_locked_x and is_locked_y) else "TRACKING"
+    status_color = (0, 255, 0) if (is_locked_x and is_locked_y) else (255, 255, 0)
     cv2.putText(img=frame, text=status, org=(10, 30),
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.7, color=status_color, thickness=2)
     
-    cv2.putText(img=frame, text=f"Servo: {servo_angle:.1f}deg", org=(10, 60),
+    cv2.putText(img=frame, text=f"Pan: {pan_angle:.1f}deg {'✓' if is_locked_x else ''}", org=(10, 60),
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.6, color=(255, 255, 255), thickness=1)
-    cv2.putText(img=frame, text=f"FPS: {fps:.1f}", org=(10, 85),
+    cv2.putText(img=frame, text=f"Tilt: {tilt_angle:.1f}deg {'✓' if is_locked_y else ''}", org=(10, 85),
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.6, color=(255, 255, 255), thickness=1)
+    cv2.putText(img=frame, text=f"FPS: {fps:.1f}", org=(10, 110),
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.6, color=(255, 255, 255), thickness=1)
     
-    if bright_x is not None:
-        error = bright_x - center_x
-        cv2.putText(img=frame, text=f"Error: {error}px", org=(10, 110),
+    if bright_x is not None and bright_y is not None:
+        error_x = bright_x - center_x
+        error_y = bright_y - center_y
+        cv2.putText(img=frame, text=f"Error: X={error_x:+4d}px Y={error_y:+4d}px", org=(10, 135),
                     fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.6, color=(255, 255, 255), thickness=1)
     
     return frame
@@ -96,7 +139,7 @@ def main() -> None:
     
     # Test servo
     logger.info("Testing servo...")
-    kit.servo[SERVO_CHANNEL].angle = 0.0
+    kit.servo[SERVO_CHANNEL].angle = 60.0
     time.sleep(0.5)
     kit.servo[SERVO_CHANNEL].angle = 120.0
     time.sleep(0.5)
@@ -181,7 +224,12 @@ def main() -> None:
     except KeyboardInterrupt:
         logger.info("\nStopped by user")
     finally:
+        # Center servo then release it
+        logger.info("Releasing servo...")
         kit.servo[SERVO_CHANNEL].angle = 90.0
+        time.sleep(0.5)
+        kit.servo[SERVO_CHANNEL].angle = None  # Release the servo (de-energize)
+        
         picam2.stop()
         cv2.destroyAllWindows()
         logger.info("Done!")
