@@ -24,14 +24,14 @@ CAMERA_HEIGHT: int = 480
 BLUR_SIZE: int = 15
 
 # Control tuning
-PROPORTIONAL_GAIN: float = 0.3  # How aggressively to move
+PROPORTIONAL_GAIN: float = 0.05  # How aggressively to move
 DEADZONE_PIXELS: int = 30  # Don't move servo if error is within this range
 
 # Servo limits
-PAN_MIN: float = 30.0
-PAN_MAX: float = 150.0
-TILT_MIN: float = 30.0
-TILT_MAX: float = 150.0
+PAN_MIN: float = 0.0
+PAN_MAX: float = 180.0
+TILT_MIN: float = 0.0
+TILT_MAX: float = 180.0
 
 
 # ============================================================================
