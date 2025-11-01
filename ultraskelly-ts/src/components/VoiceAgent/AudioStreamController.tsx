@@ -1,120 +1,164 @@
-
 import { useAudioProcessing } from '../../hooks/useAudioProcessing';
 import { useAudioBuffer } from '../../hooks/useAudioBuffer';
-import { VolumeProcessor, NoiseGateProcessor } from '../../utils/audioProcessors';
-import {useEffect, useRef} from "react";
-import {useVoiceAgentContext} from "./VoiceAgentProvider.tsx";
+import {
+    VolumeProcessor,
+    NoiseGateProcessor,
+    CompressorProcessor,
+    BandpassFilterProcessor,
+} from '../../utils/audioProcessors';
+import { useEffect, useRef, useState } from 'react';
+import { useVoiceAgentContext } from './VoiceAgentProvider';
+import { AudioAnalyzer } from '../../services/audioAnalyzer';
+import {AudioEvent, AudioStartEvent, AudioStoppedEvent} from "../../types/types.ts";
 
 export function AudioStreamController(): JSX.Element {
-  const { voiceAgent, backend } = useVoiceAgentContext();
-  const audioProcessing = useAudioProcessing();
-  const audioBuffer = useAudioBuffer();
-  const uploadIntervalRef = useRef<NodeJS.Timeout | null>(null);
+    const { voiceAgent, backend } = useVoiceAgentContext();
+    const audioProcessing = useAudioProcessing();
+    const audioBuffer = useAudioBuffer();
+    const uploadIntervalRef = useRef<NodeJS.Timeout | null>(null);
+    const analyzerRef = useRef(new AudioAnalyzer());
 
-  // Set up audio processors on mount
-  useEffect(() => {
-    // Add volume boost processor
-    audioProcessing.addProcessor(new VolumeProcessor(1.2));
+    const [metrics, setMetrics] = useState({ rms: 0, peak: 0, clipping: false });
 
-    // Add noise gate processor
-    audioProcessing.addProcessor(new NoiseGateProcessor(100));
+    // Set up enhanced audio processors on mount
+    useEffect(() => {
+        // 1. Noise gate - remove background noise (more aggressive than before)
+        audioProcessing.addProcessor(new NoiseGateProcessor(200));
 
-    return () => {
-      audioProcessing.clearProcessors();
-    };
-  }, [audioProcessing]);
+        // 2. Bandpass filter - focus on speech frequencies (300-3400 Hz)
+        // This is KEY for voice clarity - removes rumble and hiss
+        audioProcessing.addProcessor(new BandpassFilterProcessor(300, 3400));
 
-  // Handle audio streaming
-  useEffect(() => {
-    if (!voiceAgent.session) return;
+        // 3. Compressor - even out volume levels for consistent listening
+        audioProcessing.addProcessor(new CompressorProcessor(20000, 4.0));
 
-    // When audio starts, create a new buffer
-    voiceAgent.session.on('audio_start', (event: { itemId: string }) => {
-      console.log('📦 Starting audio buffer for:', event.itemId);
-      audioBuffer.startBuffer(event.itemId);
-    });
+        // 4. Volume boost - make it louder (increased from 1.2x to 1.5x)
+        audioProcessing.addProcessor(new VolumeProcessor(1.5));
 
-    // When audio chunk arrives
-    voiceAgent.session.on('audio', async (event: { data: ArrayBuffer; itemId: string }) => {
-      console.log('🎵 Processing audio chunk:', event.data.byteLength, 'bytes');
+        return () => {
+            audioProcessing.clearProcessors();
+        };
+    }, [audioProcessing]);
 
-      // 1. Store in buffer for backend upload
-      audioBuffer.addChunk(event.itemId, event.data);
+    // Handle audio streaming with quality analysis
+    useEffect(() => {
+        if (!voiceAgent.session) return;
 
-      // 2. Process and play the audio
-      try {
-        await audioProcessing.playAudio(event.data);
-      } catch (error) {
-        console.error('Failed to play audio:', error);
-      }
-    });
+        const handleAudioStart = (event: AudioStartEvent): void => {
+            console.log('📦 Starting audio buffer for:', event.itemId);
+            audioBuffer.startBuffer(event.itemId);
+        };
 
-    // When audio stream ends
-    voiceAgent.session.on('audio_stopped', async (event: { itemId: string }) => {
-      console.log('🏁 Audio stream ended:', event.itemId);
+        const handleAudioChunk = async (event: AudioEvent): Promise<void> => {
+            console.log('🎵 Processing audio chunk:', event.data.byteLength, 'bytes');
 
-      const completedBuffer = audioBuffer.endBuffer(event.itemId);
+            // Analyze audio quality
+            const int16Data = new Int16Array(event.data);
+            const audioMetrics = analyzerRef.current.analyze(int16Data);
+            setMetrics(audioMetrics);
 
-      if (completedBuffer && completedBuffer.chunks.length > 0) {
-        // Upload complete audio stream to backend
-        try {
-          await backend.uploadFullAudioStream(
-            completedBuffer.itemId,
-            completedBuffer.chunks
-          );
-          console.log('✅ Audio uploaded to backend');
-        } catch (error) {
-          console.error('❌ Failed to upload audio:', error);
-        }
+            // Log warnings for quality issues
+            if (audioMetrics.clipping) {
+                console.warn('⚠️ Audio clipping detected! Peak:', audioMetrics.peak);
+            }
 
-        // Clean up buffer
-        audioBuffer.clearBuffer(event.itemId);
-      }
-    });
+            // Buffer the audio
+            audioBuffer.addChunk(event.itemId, event.data);
 
-    // When user interrupts
-    voiceAgent.session.on('audio_interrupted', () => {
-      console.log('⏸️ User interrupted - stopping playback');
-      audioProcessing.stopAudio();
-    });
+            // Process and play the audio
+            try {
+                await audioProcessing.playAudio(event.data);
+            } catch (error) {
+                console.error('Failed to play audio:', error);
+            }
+        };
 
-  }, [voiceAgent.session, audioProcessing, audioBuffer, backend]);
+        const handleAudioStopped = async (event: AudioStoppedEvent): Promise<void> => {
+            console.log('🛑 Audio stream ended:', event.itemId);
 
-  // Optional: Upload buffered audio periodically (every 5 seconds)
-  useEffect(() => {
-    if (!voiceAgent.isConnected) return;
+            const completedBuffer = audioBuffer.endBuffer(event.itemId);
 
-    uploadIntervalRef.current = setInterval(async () => {
-      const allBuffers = audioBuffer.getAllBuffers();
+            if (completedBuffer && completedBuffer.chunks.length > 0) {
+                try {
+                    await backend.uploadFullAudioStream(
+                        completedBuffer.itemId,
+                        completedBuffer.chunks
+                    );
+                    console.log('✅ Audio uploaded to backend');
+                } catch (error) {
+                    console.error('❌ Failed to upload audio:', error);
+                }
 
-      for (const buffer of allBuffers) {
-        // Upload if buffer has been active for more than 5 seconds
-        const duration = Date.now() - buffer.startTime.getTime();
-        if (duration > 5000 && buffer.chunks.length > 0) {
-          try {
-            await backend.uploadFullAudioStream(buffer.itemId, buffer.chunks);
-            console.log('📤 Periodic upload complete for:', buffer.itemId);
-          } catch (error) {
-            console.error('Failed periodic upload:', error);
-          }
-        }
-      }
-    }, 5000);
+                audioBuffer.clearBuffer(event.itemId);
+            }
+        };
 
-    return () => {
-      if (uploadIntervalRef.current) {
-        clearInterval(uploadIntervalRef.current);
-      }
-    };
-  }, [voiceAgent.isConnected, audioBuffer, backend]);
+        const handleAudioInterrupted = (): void => {
+            console.log('⏸️ User interrupted - stopping playback');
+            audioProcessing.stopAudio();
+        };
 
-  return (
-    <div className="audio-stream-status">
-      {audioProcessing.isPlaying && (
-        <div className="audio-indicator">
-          🔊 Audio playing...
+        voiceAgent.session.on('audio_start', handleAudioStart);
+        voiceAgent.session.on('audio', handleAudioChunk);
+        voiceAgent.session.on('audio_stopped', handleAudioStopped);
+        voiceAgent.session.on('audio_interrupted', handleAudioInterrupted);
+
+        return () => {
+            voiceAgent.session?.off('audio_start', handleAudioStart);
+            voiceAgent.session?.off('audio', handleAudioChunk);
+            voiceAgent.session?.off('audio_stopped', handleAudioStopped);
+            voiceAgent.session?.off('audio_interrupted', handleAudioInterrupted);
+        };
+    }, [voiceAgent.session, audioProcessing, audioBuffer, backend]);
+
+    // Periodic upload of buffered audio (every 5 seconds)
+    useEffect(() => {
+        if (!voiceAgent.isConnected) return;
+
+        uploadIntervalRef.current = setInterval(async () => {
+            const allBuffers = audioBuffer.getAllBuffers();
+
+            for (const buffer of allBuffers) {
+                const duration = Date.now() - buffer.startTime.getTime();
+                if (duration > 5000 && buffer.chunks.length > 0) {
+                    try {
+                        await backend.uploadFullAudioStream(buffer.itemId, buffer.chunks);
+                        console.log('📤 Periodic upload complete for:', buffer.itemId);
+                    } catch (error) {
+                        console.error('Failed periodic upload:', error);
+                    }
+                }
+            }
+        }, 5000);
+
+        return () => {
+            if (uploadIntervalRef.current) {
+                clearInterval(uploadIntervalRef.current);
+            }
+        };
+    }, [voiceAgent.isConnected, audioBuffer, backend]);
+
+    return (
+        <div className="audio-stream-status">
+            {audioProcessing.isPlaying && (
+                <div className="audio-indicator">
+                    🔊 Audio playing...
+                </div>
+            )}
+
+            {voiceAgent.isConnected && (
+                <div className="audio-metrics">
+                    <div className="metric">
+                        <span className="label">RMS:</span> {Math.round(metrics.rms)}
+                    </div>
+                    <div className="metric">
+                        <span className="label">Peak:</span> {Math.round(metrics.peak)}
+                    </div>
+                    {metrics.clipping && (
+                        <div className="metric warning">⚠️ Clipping!</div>
+                    )}
+                </div>
+            )}
         </div>
-      )}
-    </div>
-  );
+    );
 }

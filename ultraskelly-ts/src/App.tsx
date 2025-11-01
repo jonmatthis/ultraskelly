@@ -5,28 +5,27 @@ import { ConversationDisplay } from './components/VoiceAgent/ConversationDisplay
 import { AudioControls } from './components/VoiceAgent/AudioControls';
 import { AudioStreamController } from './components/VoiceAgent/AudioStreamController';
 import './style.css';
-import {VoiceAgentConfig} from "./types/types.ts";
+import { VoiceAgentConfig } from './types/types';
 
-const BACKEND_URL = import.meta.env["VITE_BACKEND_URL"] || 'http://localhost:3001';
+const BACKEND_URL = import.meta.env["VITE_BACKEND_URL"] || 'http://localhost:8174';
 
 const AGENT_CONFIG: VoiceAgentConfig = {
-  name: 'Assistant',
-  instructions: 'You are a helpful and friendly assistant. Be concise and clear.',
-  model: 'gpt-realtime',
+    name: 'Assistant',
+    instructions: 'You are a helpful and friendly assistant. Be concise and clear.',
+    model: 'gpt-realtime',
 };
 
-// OPTION 1: Let TypeScript infer (RECOMMENDED - most modern)
-export function App() {
-  return (
-    <VoiceAgentProvider backendUrl={BACKEND_URL}>
-      <div className="app">
-        <h1>🎤 Voice Agent with Audio Control</h1>
-        <StatusIndicator />
-        <ConnectionButton agentConfig={AGENT_CONFIG} />
-        <AudioControls />
-        <AudioStreamController />
-        <ConversationDisplay />
-      </div>
-    </VoiceAgentProvider>
-  );
+export function App(): JSX.Element {
+    return (
+        <VoiceAgentProvider backendUrl={BACKEND_URL}>
+            <div className="app">
+                <h1>🎤 Voice Agent with Audio Control</h1>
+                <StatusIndicator />
+                <ConnectionButton agentConfig={AGENT_CONFIG} />
+                <AudioControls />
+                <AudioStreamController />
+                <ConversationDisplay />
+            </div>
+        </VoiceAgentProvider>
+    );
 }

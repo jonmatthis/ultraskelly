@@ -21,7 +21,7 @@ export class BackendService {
   }
 
   async getEphemeralKey(): Promise<string> {
-    const response = await fetch(`${this.baseUrl}/api/ephemeral-key`, {
+    const response = await fetch(`${this.baseUrl}/ephemeral-key`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     });
