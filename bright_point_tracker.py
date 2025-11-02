@@ -17,9 +17,9 @@ class ServoController:
     def __init__(
         self,
         *,
-        pitch_channel: int = 3,
-        yaw_channel: int = 7,
-        roll_channel: int = 11
+        pitch_channel: int = 7,
+        yaw_channel: int = 11,
+        roll_channel: int = 3
     ) -> None:
         """
         Initialize servo controller.
@@ -43,8 +43,8 @@ class ServoController:
         self.roll_angle: float = 90.0
         
         # Servo limits
-        self.min_angle: float = 30.0
-        self.max_angle: float = 150.0
+        self.min_angle: float = 0.0
+        self.max_angle: float = 180.0
         
         # Control parameters (will be calibrated)
         self.p_gain: float = 0.1

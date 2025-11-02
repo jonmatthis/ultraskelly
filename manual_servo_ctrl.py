@@ -31,11 +31,11 @@ def main() -> None:
     roll_angle: float = 90.0
     
     # Limits
-    min_angle: float = 30.0
-    max_angle: float = 150.0
+    min_angle: float = 6.0
+    max_angle: float = 170.0
     
     # Control step size
-    step: float = 2.0
+    step: float = 5.0
     
     # Center servos
     print("Centering servos...")
