@@ -3,44 +3,34 @@ import { useAudioBuffer } from '../../hooks/useAudioBuffer';
 import {
     VolumeProcessor,
     NoiseGateProcessor,
-    CompressorProcessor,
-    BandpassFilterProcessor,
 } from '../../utils/audioProcessors';
 import { useEffect, useRef, useState } from 'react';
 import { useVoiceAgentContext } from './VoiceAgentProvider';
 import { AudioAnalyzer } from '../../services/audioAnalyzer';
-import {AudioEvent, AudioStartEvent, AudioStoppedEvent} from "../../types/types.ts";
+import { AudioEvent, AudioStartEvent, AudioStoppedEvent } from "../../types/types";
+import { AudioWaveformVisualizer } from "./WaveformVisualizer.tsx";
+import { useAudioAnalyzer } from "../../hooks/useAudioAnalyzer.ts";
 
-export function AudioStreamController(): JSX.Element {
+export function AudioStreamController() {
     const { voiceAgent, backend } = useVoiceAgentContext();
     const audioProcessing = useAudioProcessing();
     const audioBuffer = useAudioBuffer();
+    const audioAnalyser = useAudioAnalyzer({ audioContext: audioProcessing.audioContext });
     const uploadIntervalRef = useRef<NodeJS.Timeout | null>(null);
     const analyzerRef = useRef(new AudioAnalyzer());
 
     const [metrics, setMetrics] = useState({ rms: 0, peak: 0, clipping: false });
 
-    // Set up enhanced audio processors on mount
+    // SIMPLIFIED: Only use stateless processors to avoid artifacts
     useEffect(() => {
-        // 1. Noise gate - remove background noise (more aggressive than before)
         audioProcessing.addProcessor(new NoiseGateProcessor(200));
+        audioProcessing.addProcessor(new VolumeProcessor(1.2)); // Slight boost
 
-        // 2. Bandpass filter - focus on speech frequencies (300-3400 Hz)
-        // This is KEY for voice clarity - removes rumble and hiss
-        audioProcessing.addProcessor(new BandpassFilterProcessor(300, 3400));
-
-        // 3. Compressor - even out volume levels for consistent listening
-        audioProcessing.addProcessor(new CompressorProcessor(20000, 4.0));
-
-        // 4. Volume boost - make it louder (increased from 1.2x to 1.5x)
-        audioProcessing.addProcessor(new VolumeProcessor(1.5));
-
-        return () => {
+        return (): void => {
             audioProcessing.clearProcessors();
         };
     }, [audioProcessing]);
 
-    // Handle audio streaming with quality analysis
     useEffect(() => {
         if (!voiceAgent.session) return;
 
@@ -49,27 +39,24 @@ export function AudioStreamController(): JSX.Element {
             audioBuffer.startBuffer(event.itemId);
         };
 
-        const handleAudioChunk = async (event: AudioEvent): Promise<void> => {
-            console.log('🎵 Processing audio chunk:', event.data.byteLength, 'bytes');
+        const handleAudioChunk = (event: AudioEvent): void => {
+            console.log('🎵 Received chunk:', event.data.byteLength, 'bytes');
 
-            // Analyze audio quality
             const int16Data = new Int16Array(event.data);
             const audioMetrics = analyzerRef.current.analyze(int16Data);
             setMetrics(audioMetrics);
 
-            // Log warnings for quality issues
             if (audioMetrics.clipping) {
                 console.warn('⚠️ Audio clipping detected! Peak:', audioMetrics.peak);
             }
 
-            // Buffer the audio
             audioBuffer.addChunk(event.itemId, event.data);
 
-            // Process and play the audio
             try {
-                await audioProcessing.playAudio(event.data);
+                // Queue the audio chunk for sequential playback
+                audioProcessing.queueAudio(event.data, audioAnalyser.analyserNode);
             } catch (error) {
-                console.error('Failed to play audio:', error);
+                console.error('Failed to queue audio:', error);
             }
         };
 
@@ -103,19 +90,18 @@ export function AudioStreamController(): JSX.Element {
         voiceAgent.session.on('audio_stopped', handleAudioStopped);
         voiceAgent.session.on('audio_interrupted', handleAudioInterrupted);
 
-        return () => {
+        return (): void => {
             voiceAgent.session?.off('audio_start', handleAudioStart);
             voiceAgent.session?.off('audio', handleAudioChunk);
             voiceAgent.session?.off('audio_stopped', handleAudioStopped);
             voiceAgent.session?.off('audio_interrupted', handleAudioInterrupted);
         };
-    }, [voiceAgent.session, audioProcessing, audioBuffer, backend]);
+    }, [voiceAgent.session, audioProcessing, audioBuffer, backend, audioAnalyser]);
 
-    // Periodic upload of buffered audio (every 5 seconds)
     useEffect(() => {
         if (!voiceAgent.isConnected) return;
 
-        uploadIntervalRef.current = setInterval(async () => {
+        uploadIntervalRef.current = setInterval(async (): Promise<void> => {
             const allBuffers = audioBuffer.getAllBuffers();
 
             for (const buffer of allBuffers) {
@@ -131,7 +117,7 @@ export function AudioStreamController(): JSX.Element {
             }
         }, 5000);
 
-        return () => {
+        return (): void => {
             if (uploadIntervalRef.current) {
                 clearInterval(uploadIntervalRef.current);
             }
@@ -139,7 +125,13 @@ export function AudioStreamController(): JSX.Element {
     }, [voiceAgent.isConnected, audioBuffer, backend]);
 
     return (
-        <div className="audio-stream-status">
+        <div className="audio-stream-status" style={{ width: '100%', maxWidth: '1200px', margin: '0 auto' }}>
+            {/* Waveform Visualizer - now responsive */}
+            <AudioWaveformVisualizer
+                analyserNode={audioAnalyser.analyserNode}
+                height={150}
+            />
+
             {audioProcessing.isPlaying && (
                 <div className="audio-indicator">
                     🔊 Audio playing...
