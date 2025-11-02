@@ -23,4 +23,5 @@ def kill_process_on_port(port: int):
 
 if __name__ == "__main__":
     from ultraskelly.api.server_constants import PORT
-    kill_process_on_port(PORT)
+    kill_process_on_port(5173)
+

@@ -4,6 +4,7 @@ import { StatusIndicator } from './components/VoiceAgent/StatusIndicator';
 import { ConversationDisplay } from './components/VoiceAgent/ConversationDisplay';
 import { AudioControls } from './components/VoiceAgent/AudioControls';
 import { AudioStreamController } from './components/VoiceAgent/AudioStreamController';
+import { MicrophoneController } from './components/VoiceAgent/MicrophoneController';
 import './style.css';
 import { VoiceAgentConfig } from './types/types';
 
@@ -15,7 +16,7 @@ const AGENT_CONFIG: VoiceAgentConfig = {
     model: 'gpt-realtime',
 };
 
-export function App(): JSX.Element {
+export function App() {
     return (
         <VoiceAgentProvider backendUrl={BACKEND_URL}>
             <div className="app">
@@ -23,6 +24,7 @@ export function App(): JSX.Element {
                 <StatusIndicator />
                 <ConnectionButton agentConfig={AGENT_CONFIG} />
                 <AudioControls />
+                <MicrophoneController />
                 <AudioStreamController />
                 <ConversationDisplay />
             </div>

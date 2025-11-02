@@ -10,8 +10,6 @@ import {
 } from '../types/types';
 
 export interface RealtimeServiceCallbacks {
-    onConnected: () => void;
-    onDisconnected: () => void;
     onError: (error: Error) => void;
     onHistoryUpdated: (history: ConversationHistoryItem[]) => void;
     onToolStart?: (toolName: string) => void;
@@ -43,14 +41,6 @@ export class RealtimeService {
         model: string = 'gpt-realtime'
     ): RealtimeSession {
         this.session = new RealtimeSession(agent, { model });
-
-        this.session.on('connected', (): void => {
-            callbacks.onConnected();
-        });
-
-        this.session.on('disconnected', (): void => {
-            callbacks.onDisconnected();
-        });
 
         this.session.on('error', (error: Error): void => {
             callbacks.onError(error);
@@ -93,20 +83,17 @@ export class RealtimeService {
             model,
         });
 
-        // Standard event handlers
-        this.session.on('connected', (): void => {
-            callbacks.onConnected();
-        });
-
-        this.session.on('disconnected', (): void => {
-            callbacks.onDisconnected();
-        });
+        // Note: RealtimeSession does NOT emit 'connected' or 'disconnected' events
+        // The session.connect() promise resolving means you're connected
+        // The session emits 'history_updated' with empty history when first connected
 
         this.session.on('error', (error: Error): void => {
+            console.log('❌ Session error event');
             callbacks.onError(error);
         });
 
         this.session.on('history_updated', (history: ConversationHistoryItem[]): void => {
+            console.log('📝 History updated event:', history.length, 'items');
             callbacks.onHistoryUpdated(history);
         });
 
@@ -138,7 +125,9 @@ export class RealtimeService {
         if (!this.session) {
             throw new Error('Session not created. Call createSession first.');
         }
+        console.log('🔌 Calling session.connect()...');
         await this.session.connect({ apiKey });
+        console.log('✅ session.connect() resolved - connection established!');
     }
 
     async disconnect(): Promise<void> {
@@ -147,9 +136,11 @@ export class RealtimeService {
         }
 
         try {
+            console.log('🔌 Closing session...');
             if ('close' in this.session && typeof (this.session as { close?: () => Promise<void> }).close === 'function') {
                 await (this.session as { close: () => Promise<void> }).close();
             }
+            console.log('✅ Session closed');
         } catch (error) {
             console.error('Error during disconnect:', error);
         }

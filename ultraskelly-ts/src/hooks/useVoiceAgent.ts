@@ -1,4 +1,3 @@
-
 import { useState, useCallback, useRef } from 'react';
 import { RealtimeService } from '../services/realtimeService';
 import {ConnectionStatus, ConversationHistoryItem, VoiceAgentConfig, VoiceAgentState} from "../types/types.ts";
@@ -34,34 +33,43 @@ export function useVoiceAgent(): UseVoiceAgentResult {
 
   const connect = useCallback(async (apiKey: string, config: VoiceAgentConfig): Promise<void> => {
     try {
+      console.log('🔌 Starting connection process...');
       updateStatus('connecting');
 
       const service = new RealtimeService();
       serviceRef.current = service;
 
+      console.log('👤 Creating agent...');
       const agent = service.createAgent(config);
 
-      const session = service.createSession(agent, {
-        onConnected: (): void => {
-          updateStatus('connected');
-        },
-        onDisconnected: (): void => {
-          updateStatus('disconnected');
-        },
+      console.log('🎯 Creating session with audio control...');
+      const session = service.createSessionWithAudioControl(agent, {
         onError: (error: Error): void => {
-          console.error('Session error:', error);
+          console.error('❌ Session error:', error);
           updateStatus('error', error.message);
         },
         onHistoryUpdated: (history: ConversationHistoryItem[]): void => {
+          console.log('📝 History updated:', history.length, 'items');
           historyCallbackRef.current?.(history);
         },
       }, config.model);
 
       setState(prev => ({ ...prev, agent, session }));
 
+      console.log('🔐 Connecting with API key...');
+      console.log('Key starts with:', apiKey.substring(0, 10) + '...');
+
+      // When this resolves, the connection is established
       await service.connect(apiKey);
+
+      console.log('✅ Connection complete!');
+
+      // Update status to connected - the session.connect() promise resolving means we're connected
+      updateStatus('connected');
+
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      console.error('❌ Connection failed:', errorMessage, error);
       updateStatus('error', errorMessage);
       throw error;
     }
@@ -73,9 +81,11 @@ export function useVoiceAgent(): UseVoiceAgentResult {
     }
 
     try {
+      console.log('🔌 Disconnecting...');
       updateStatus('disconnecting');
       await serviceRef.current.disconnect();
 
+      console.log('✅ Disconnected successfully');
       setState({
         status: 'disconnected',
         isConnected: false,
@@ -87,6 +97,7 @@ export function useVoiceAgent(): UseVoiceAgentResult {
       serviceRef.current = null;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      console.error('❌ Disconnect error:', error);
       updateStatus('error', errorMessage);
     }
   }, [updateStatus]);
@@ -106,7 +117,7 @@ export function useVoiceAgent(): UseVoiceAgentResult {
   }, []);
 
   const onHistoryUpdate = useCallback((
-    callback: (history: ConversationHistoryItem[]) => void
+      callback: (history: ConversationHistoryItem[]) => void
   ): void => {
     historyCallbackRef.current = callback;
   }, []);
