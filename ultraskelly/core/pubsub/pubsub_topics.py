@@ -5,7 +5,7 @@ from skellycam.core.types.type_overloads import CameraGroupIdString, CameraIdStr
 from skellytracker.trackers.base_tracker.base_tracker_abcs import TrackedPointIdString
 from skellytracker.trackers.charuco_tracker.charuco_observation import CharucoObservation
 
-from ultraskelly.core.pipeline.pipeline_configs import PipelineConfig
+from ultraskelly.core.nodes.pipeline_configs import PipelineConfig
 from ultraskelly.core.pubsub.pubsub_abcs import TopicMessageABC, create_topic
 from ultraskelly.core.tasks.calibration_task.calibration_helpers.charuco_overlay_data import CharucoOverlayData
 from ultraskelly.core.types.type_overloads import TrackerTypeString, FrameNumberInt, Point3d, PipelineIdString
