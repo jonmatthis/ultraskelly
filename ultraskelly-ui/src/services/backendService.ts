@@ -52,7 +52,7 @@ export class BackendService {
     conversationId: string,
     history: unknown[]
   ): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/api/conversations/${conversationId}/history`, {
+    const response = await fetch(`${this.baseUrl}/ai/conversations/${conversationId}/history`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ history }),
@@ -74,7 +74,7 @@ export class BackendService {
     formData.append('timestamp', request.timestamp);
     formData.append('metadata', JSON.stringify(request.metadata || {}));
 
-    const response = await fetch(`${this.baseUrl}/api/audio/upload`, {
+    const response = await fetch(`${this.baseUrl}/audio/upload`, {
       method: 'POST',
       body: formData,
     });

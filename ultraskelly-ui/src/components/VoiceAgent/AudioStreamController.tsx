@@ -21,7 +21,6 @@ export function AudioStreamController() {
 
     const [metrics, setMetrics] = useState({ rms: 0, peak: 0, clipping: false });
 
-    // SIMPLIFIED: Only use stateless processors to avoid artifacts
     useEffect(() => {
         audioProcessing.addProcessor(new NoiseGateProcessor(200));
         audioProcessing.addProcessor(new VolumeProcessor(1.2)); // Slight boost

@@ -17,13 +17,13 @@ if not OPENAI_API_KEY:
     logger.error("Please create a .env file and add your OpenAI API key")
     exit(1)
 
-print("✅ OpenAI API key loaded successfully")
+logger.info("✅ OpenAI API key loaded successfully")
 
+ephemeral_key_router = APIRouter(tags=["App"])
 
 class EphemeralKeyResponse(BaseModel):
     value: str
     expires_at: int
-ephemeral_key_router = APIRouter(tags=["App"])
 
 
 @ephemeral_key_router.post("/ephemeral-key", response_model=EphemeralKeyResponse)
