@@ -2,10 +2,12 @@
 Async Target Tracker with Dual Detection: IMX500 Pose + Hailo Face Landmarks
 
 ROS2-inspired architecture with simultaneous pose and face detection.
+Hailo inference runs in dedicated worker thread to avoid blocking async loop.
 """
 import asyncio
 import logging
 import sys
+import threading
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -408,7 +410,10 @@ class PoseDetectorNode:
 # ============================================================================
 
 class HailoFaceDetectorNode:
-    """Detects faces and facial landmarks using Hailo AI HAT+."""
+    """Detects faces and facial landmarks using Hailo AI HAT+.
+
+    Runs in a dedicated thread to avoid blocking the async event loop.
+    """
 
     MODEL_URLS = {
         "scrfd_2.5g": "https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.14.0/hailo8l/scrfd_2.5g.hef",
@@ -419,68 +424,29 @@ class HailoFaceDetectorNode:
         self.pubsub = pubsub
         self.params = params
         self._running = False
+        self._thread = None
+        self._event_loop = None  # Store reference to main async event loop
 
         self.frame_queue = pubsub.frame.subscribe()
         self.model_cache_dir = Path(params.model_cache_dir).expanduser()
 
-        logger.info("Initializing HailoFaceDetectorNode...")
+        # Hailo resources will be initialized in worker thread
+        self.device = None
+        self.face_hef = None
+        self.landmark_hef = None
+        self.face_network_group = None
+        self.landmark_network_group = None
+        self.face_input_params = None
+        self.face_output_params = None
+        self.landmark_input_params = None
+        self.landmark_output_params = None
 
-        # Ensure models exist
+        # Ensure models exist (can do this in main thread)
         logger.info("Checking face detection models...")
-        face_model = self._ensure_model(params.face_model_path, "scrfd_2.5g")
-        landmark_model = self._ensure_model(params.landmark_model_path, "tddfa_mobilenet_v1")
-
-        # Initialize Hailo device
-        logger.info("Initializing Hailo VDevice...")
-        try:
-            self.device = VDevice()
-            logger.info("✓ VDevice initialized")
-        except Exception as e:
-            logger.error(f"Failed to initialize VDevice: {e}")
-            raise
-
-        logger.info("Loading Hailo face models...")
-        try:
-            self.face_hef = HEF(face_model)
-            logger.info("✓ Face detection HEF loaded")
-            self.landmark_hef = HEF(landmark_model)
-            logger.info("✓ Landmark detection HEF loaded")
-        except Exception as e:
-            logger.error(f"Failed to load HEF models: {e}")
-            raise
-
-        # Configure models
-        logger.info("Configuring network groups...")
-        try:
-            self.face_network_group = self.device.configure(
-                self.face_hef,
-                ConfigureParams.create_from_hef(self.face_hef, interface=HailoStreamInterface.PCIe)
-            )[0]
-            logger.info("✓ Face network group configured")
-
-            self.landmark_network_group = self.device.configure(
-                self.landmark_hef,
-                ConfigureParams.create_from_hef(self.landmark_hef, interface=HailoStreamInterface.PCIe)
-            )[0]
-            logger.info("✓ Landmark network group configured")
-        except Exception as e:
-            logger.error(f"Failed to configure network groups: {e}")
-            raise
-
-        logger.info("Creating VStream parameters...")
-        try:
-            self.face_input_params = InputVStreamParams.make(self.face_network_group)
-            self.face_output_params = OutputVStreamParams.make(self.face_network_group)
-
-            self.landmark_input_params = InputVStreamParams.make(self.landmark_network_group)
-            self.landmark_output_params = OutputVStreamParams.make(self.landmark_network_group)
-            logger.info("✓ VStream parameters created")
-        except Exception as e:
-            logger.error(f"Failed to create VStream parameters: {e}")
-            raise
+        self.face_model_path = self._ensure_model(params.face_model_path, "scrfd_2.5g")
+        self.landmark_model_path = self._ensure_model(params.landmark_model_path, "tddfa_mobilenet_v1")
 
         self.frame_skip_counter = 0
-        logger.info("✓ HailoFaceDetectorNode initialized successfully")
 
     def _ensure_model(self, model_path: str, model_name: str) -> str:
         """Ensure model exists, download if necessary."""
@@ -520,7 +486,170 @@ class HailoFaceDetectorNode:
 
         return [(center_x - face_size//2, center_y - face_size//2, face_size, face_size)]
 
-    def _detect_landmarks_sync(self, frame: np.ndarray, face_box: tuple[int, int, int, int]) -> np.ndarray:
+    def _initialize_hailo_resources(self) -> None:
+        """Initialize Hailo resources (must be called from worker thread)."""
+        logger.info("Initializing Hailo VDevice in worker thread...")
+        try:
+            self.device = VDevice()
+            logger.info("✓ VDevice initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize VDevice: {e}")
+            raise
+
+        logger.info("Loading Hailo face models...")
+        try:
+            self.face_hef = HEF(self.face_model_path)
+            logger.info("✓ Face detection HEF loaded")
+            self.landmark_hef = HEF(self.landmark_model_path)
+            logger.info("✓ Landmark detection HEF loaded")
+        except Exception as e:
+            logger.error(f"Failed to load HEF models: {e}")
+            raise
+
+        logger.info("Configuring network groups...")
+        try:
+            self.face_network_group = self.device.configure(
+                self.face_hef,
+                ConfigureParams.create_from_hef(self.face_hef, interface=HailoStreamInterface.PCIe)
+            )[0]
+            logger.info("✓ Face network group configured")
+
+            self.landmark_network_group = self.device.configure(
+                self.landmark_hef,
+                ConfigureParams.create_from_hef(self.landmark_hef, interface=HailoStreamInterface.PCIe)
+            )[0]
+            logger.info("✓ Landmark network group configured")
+        except Exception as e:
+            logger.error(f"Failed to configure network groups: {e}")
+            raise
+
+        logger.info("Creating VStream parameters...")
+        try:
+            self.face_input_params = InputVStreamParams.make(self.face_network_group)
+            self.face_output_params = OutputVStreamParams.make(self.face_network_group)
+
+            self.landmark_input_params = InputVStreamParams.make(self.landmark_network_group)
+            self.landmark_output_params = OutputVStreamParams.make(self.landmark_network_group)
+            logger.info("✓ VStream parameters created")
+        except Exception as e:
+            logger.error(f"Failed to create VStream parameters: {e}")
+            raise
+
+    def _worker_thread(self) -> None:
+        """Worker thread that runs synchronous Hailo operations."""
+        logger.info(f"Face detector worker thread started (tid={threading.get_ident()})")
+
+        try:
+            # Initialize Hailo resources in this thread
+            self._initialize_hailo_resources()
+
+            frame_skip = max(1, 30 // self.params.inference_rate)
+
+            while self._running:
+                try:
+                    # Blocking get from async queue (with timeout)
+                    try:
+                        frame_msg = self.frame_queue.get_nowait()
+                    except:
+                        time.sleep(0.01)
+                        continue
+
+                    # Skip frames to match inference rate
+                    self.frame_skip_counter += 1
+                    if self.frame_skip_counter < frame_skip:
+                        continue
+                    self.frame_skip_counter = 0
+
+                    # Detect faces (simplified)
+                    face_boxes = self._detect_faces_simple(frame_msg.frame)
+
+                    if not face_boxes:
+                        # Publish empty data
+                        asyncio.run_coroutine_threadsafe(
+                            self.pubsub.face_data.publish(
+                                FaceDataMessage(
+                                    face_boxes=None,
+                                    landmarks=None,
+                                    mouth_states=None,
+                                    mouth_ratios=None,
+                                    timestamp=time.time()
+                                )
+                            ),
+                            self._event_loop
+                        )
+                        asyncio.run_coroutine_threadsafe(
+                            self.pubsub.target_location.publish(
+                                TargetLocationMessage(
+                                    x=None, y=None, angle=None, source="face", timestamp=time.time()
+                                )
+                            ),
+                            self._event_loop
+                        )
+                        continue
+
+                    # Process each face
+                    all_landmarks = []
+                    mouth_states = []
+                    mouth_ratios = []
+
+                    for face_box in face_boxes:
+                        try:
+                            landmarks = self._detect_landmarks_sync(frame_msg.frame, face_box)
+                            all_landmarks.append(landmarks)
+
+                            is_open, mar = self._calculate_mouth_state(landmarks)
+                            mouth_states.append(is_open)
+                            mouth_ratios.append(mar)
+                        except Exception as e:
+                            logger.error(f"Face processing error: {e}")
+                            continue
+
+                    # Publish face data
+                    asyncio.run_coroutine_threadsafe(
+                        self.pubsub.face_data.publish(
+                            FaceDataMessage(
+                                face_boxes=face_boxes,
+                                landmarks=all_landmarks if all_landmarks else None,
+                                mouth_states=mouth_states if mouth_states else None,
+                                mouth_ratios=mouth_ratios if mouth_ratios else None,
+                                timestamp=time.time()
+                            )
+                        ),
+                        self._event_loop
+                    )
+
+                    # Publish target location
+                    if self.params.track_mouth and len(all_landmarks) > 0:
+                        landmarks = all_landmarks[0]
+                        if landmarks.size > 0 and not np.all(landmarks == 0):
+                            mouth_points = landmarks[48:60]
+                            if mouth_points.size > 0:
+                                mouth_center_x = int(np.mean(mouth_points[:, 0]))
+                                mouth_center_y = int(np.mean(mouth_points[:, 1]))
+
+                                asyncio.run_coroutine_threadsafe(
+                                    self.pubsub.target_location.publish(
+                                        TargetLocationMessage(
+                                            x=mouth_center_x,
+                                            y=mouth_center_y,
+                                            angle=None,
+                                            source="face",
+                                            timestamp=time.time()
+                                        )
+                                    ),
+                                    self._event_loop
+                                )
+
+                    time.sleep(0.01)
+
+                except Exception as e:
+                    logger.error(f"Worker thread error: {e}", exc_info=True)
+                    time.sleep(0.1)
+
+        except Exception as e:
+            logger.error(f"Fatal worker thread error: {e}", exc_info=True)
+        finally:
+            logger.info("Face detector worker thread stopped")
         """Detect 68 landmarks for a face (synchronous - run in executor)."""
         x, y, w, h = face_box
 
@@ -593,107 +722,24 @@ class HailoFaceDetectorNode:
             return False, 0.0
 
     async def run(self) -> None:
-        """Main face detection loop."""
+        """Main face detection loop - launches worker thread."""
         logger.info(f"Starting HailoFaceDetectorNode [rate={self.params.inference_rate}fps]")
         self._running = True
 
-        frame_skip = max(1, 30 // self.params.inference_rate)
+        # Store reference to main event loop for worker thread
+        self._event_loop = asyncio.get_running_loop()
 
-        # Use executor for blocking Hailo operations
-        executor = asyncio.get_event_loop().run_in_executor
+        # Start worker thread for blocking Hailo operations
+        self._thread = threading.Thread(target=self._worker_thread, daemon=True)
+        self._thread.start()
 
         try:
-            while self._running:
-                try:
-                    frame_msg: FrameMessage = await asyncio.wait_for(
-                        self.frame_queue.get(),
-                        timeout=1.0
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning("Face detector: no frames received")
-                    continue
+            # Just keep the async task alive while worker thread runs
+            while self._running and self._thread.is_alive():
+                await asyncio.sleep(0.5)
 
-                # Skip frames to match inference rate
-                self.frame_skip_counter += 1
-                if self.frame_skip_counter < frame_skip:
-                    continue
-                self.frame_skip_counter = 0
-
-                # Detect faces (simplified - just use center for now)
-                face_boxes = self._detect_faces_simple(frame_msg.frame)
-
-                if not face_boxes:
-                    await self.pubsub.face_data.publish(
-                        FaceDataMessage(
-                            face_boxes=None,
-                            landmarks=None,
-                            mouth_states=None,
-                            mouth_ratios=None,
-                            timestamp=time.time()
-                        )
-                    )
-                    await self.pubsub.target_location.publish(
-                        TargetLocationMessage(
-                            x=None, y=None, angle=None, source="face", timestamp=time.time()
-                        )
-                    )
-                    continue
-
-                # Process each face in executor (non-blocking)
-                all_landmarks = []
-                mouth_states = []
-                mouth_ratios = []
-
-                for face_box in face_boxes:
-                    try:
-                        # Run blocking inference in thread pool
-                        landmarks = await executor(
-                            None,
-                            self._detect_landmarks_sync,
-                            frame_msg.frame,
-                            face_box
-                        )
-                        all_landmarks.append(landmarks)
-
-                        is_open, mar = self._calculate_mouth_state(landmarks)
-                        mouth_states.append(is_open)
-                        mouth_ratios.append(mar)
-                    except Exception as e:
-                        logger.error(f"Face processing error: {e}")
-                        continue
-
-                # Publish face data for visualization
-                await self.pubsub.face_data.publish(
-                    FaceDataMessage(
-                        face_boxes=face_boxes,
-                        landmarks=all_landmarks if all_landmarks else None,
-                        mouth_states=mouth_states if mouth_states else None,
-                        mouth_ratios=mouth_ratios if mouth_ratios else None,
-                        timestamp=time.time()
-                    )
-                )
-
-                # Publish target location (use first face, track mouth center if enabled)
-                if self.params.track_mouth and len(all_landmarks) > 0:
-                    landmarks = all_landmarks[0]
-                    if landmarks.size > 0:
-                        # Mouth center = average of outer lip points (48-59)
-                        mouth_points = landmarks[48:60]
-                        if mouth_points.size > 0 and not np.all(mouth_points == 0):
-                            mouth_center_x = int(np.mean(mouth_points[:, 0]))
-                            mouth_center_y = int(np.mean(mouth_points[:, 1]))
-
-                            await self.pubsub.target_location.publish(
-                                TargetLocationMessage(
-                                    x=mouth_center_x,
-                                    y=mouth_center_y,
-                                    angle=None,
-                                    source="face",
-                                    timestamp=time.time()
-                                )
-                            )
-
-                await asyncio.sleep(0.01)  # Small yield to event loop
+            if not self._thread.is_alive():
+                logger.error("Face detector worker thread died unexpectedly")
 
         except Exception as e:
             logger.error(f"HailoFaceDetectorNode error: {e}", exc_info=True)
@@ -702,6 +748,8 @@ class HailoFaceDetectorNode:
 
     async def stop(self) -> None:
         self._running = False
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
 
 
 # ============================================================================
