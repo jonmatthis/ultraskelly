@@ -252,7 +252,7 @@ class VisionNode:
 
         try:
             while self._running:
-                frame = self.picam2.capture_array()
+                frame = cv2.cvtColor(self.picam2.capture_array(), cv2.COLOR_BGR2RGB)
                 await self.pubsub.frame.publish(
                     FrameMessage(frame=frame, timestamp=time.time())
                 )

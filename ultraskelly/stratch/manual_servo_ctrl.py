@@ -68,12 +68,11 @@ def main() -> None:
         while True:
             # Capture frame
             frame = picam2.capture_array()
-            frame_bgr = cv2.cvtColor(src=frame, code=cv2.COLOR_RGB2BGR)
-            
+
             # Add servo info overlay
             text: str = f"Yaw:{yaw_angle:.0f}° Pitch:{pitch_angle:.0f}° Roll:{roll_angle:.0f}°"
             cv2.putText(
-                img=frame_bgr,
+                img=frame,
                 text=text,
                 org=(10, 30),
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX,
@@ -83,7 +82,7 @@ def main() -> None:
             )
             
             # Show frame
-            cv2.imshow("Manual Control", frame_bgr)
+            cv2.imshow("Manual Control", frame)
             
             # Handle keyboard (longer wait for better key detection)
             key: int = cv2.waitKey(30) & 0xFF
