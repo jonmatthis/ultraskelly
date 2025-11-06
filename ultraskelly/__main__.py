@@ -167,6 +167,7 @@ class VisionNodeParams(BaseModel):
     height: int = Field(default=480, ge=120, le=1080)
 
 
+
 class BrightnessDetectorParams(BaseModel):
     """Parameters for BrightnessDetectorNode."""
     blur_size: int = Field(default=15, ge=1, description="Must be odd")
@@ -212,8 +213,8 @@ class MotorNodeParams(BaseModel):
     roll_channel: int = Field(default=7, ge=0, le=15)
     target_x: int = Field(default=320, ge=0)
     target_y: int = Field(default=240, ge=0)
-    offset_x_ratio: float = Field(default=-0.1, ge=-1.0, le=1.0, description="Offset target value in x direction (screen ratio)"
-    offset_y_ratio: float = Field(default=-0.1, ge=-1.0, le=1.0, description="Offset target value in x direction (screen ratio)"
+    offset_x_ratio: float = Field(default=-0.1, ge=-1.0, le=1.0, description="Offset target value in x direction (screen ratio)")
+    offset_y_ratio: float = Field(default=-0.1, ge=-1.0, le=1.0, description="Offset target value in x direction (screen ratio)")
     gain: float = Field(default=0.05, gt=0.0, le=1.0)
     roll_gain: float = Field(default=0.3, gt=0.0, le=1.0, description="How aggressively to match roll angle")
     roll_smoothing: float = Field(default=0.7, ge=0.0, le=1.0, description="Roll angle smoothing (higher = more smoothing)")
@@ -221,7 +222,11 @@ class MotorNodeParams(BaseModel):
     roll_deadzone: float = Field(default=5.0, ge=0.0, description="Roll angle deadzone in degrees")
 
     @property
-    def offset_x
+    def x_offset(self) -> int:
+        return int(self.offset_x_ratio * self.target_x * 2)
+    @property
+    def y_offset(self) -> int:
+        return int(self.offset_y_ratio * self.target_y * 2)
 
 class UINodeParams(BaseModel):
     """Parameters for UINode."""
@@ -567,8 +572,8 @@ class MotorNode:
                     continue
 
                 # Calculate errors
-                error_x = msg.x - self.params.target_x - x_offset
-                error_y = msg.y - self.params.target_y - y_offset
+                error_x = msg.x - self.params.target_x - self.params.x_offset
+                error_y = msg.y - self.params.target_y - self.params.y_offset
 
                 # Check lock status
                 is_locked_x = abs(error_x) <= self.params.deadzone
