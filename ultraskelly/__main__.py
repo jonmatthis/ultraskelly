@@ -32,9 +32,10 @@ class FrameMessage:
 
 @dataclass(frozen=True)
 class TargetLocationMessage:
-    """Generic target location."""
+    """Generic target location with orientation."""
     x: int | None
     y: int | None
+    angle: float | None  # Rotation angle in degrees (0° = vertical up)
     timestamp: float
 
 
@@ -43,9 +44,10 @@ class ServoStateMessage:
     """Motor node output."""
     pan_angle: float
     tilt_angle: float
-    roll_angle:float
+    roll_angle: float
     is_locked_x: bool
     is_locked_y: bool
+    is_locked_roll: bool
     timestamp: float
 
 
@@ -112,7 +114,9 @@ class MotorNodeParams(BaseModel):
     target_x: int = Field(default=320, ge=0)
     target_y: int = Field(default=240, ge=0)
     gain: float = Field(default=0.05, gt=0.0, le=1.0)
+    roll_gain: float = Field(default=0.8, gt=0.0, le=1.0, description="How aggressively to match roll angle")
     deadzone: int = Field(default=30, ge=0)
+    roll_deadzone: float = Field(default=5.0, ge=0.0, description="Roll angle deadzone in degrees")
 
 
 class UINodeParams(BaseModel):
@@ -167,7 +171,7 @@ class VisionNode:
 # ============================================================================
 
 class BrightnessDetectorNode:
-    """Detects brightest point in frame."""
+    """Detects brightest point in frame with orientation."""
 
     def __init__(self, pubsub: PubSub, params: BrightnessDetectorParams) -> None:
         self.pubsub = pubsub
@@ -175,15 +179,49 @@ class BrightnessDetectorNode:
         self._running = False
         self.frame_queue = pubsub.frame.subscribe()
 
-    def _detect_target(self, frame: np.ndarray) -> tuple[int, int] | None:
-        """Find brightest point in frame."""
+    def _detect_target(self, frame: np.ndarray) -> tuple[int, int, float] | None:
+        """Find brightest point and its orientation in frame."""
         gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         blurred = cv2.GaussianBlur(gray, (self.params.blur_size, self.params.blur_size), 0)
-        _, max_val, _, max_loc = cv2.minMaxLoc(blurred)
 
-        if max_val > self.params.threshold:
-            return max_loc
-        return None
+        # Threshold to get bright region
+        _, binary = cv2.threshold(blurred, self.params.threshold, 255, cv2.THRESH_BINARY)
+
+        # Find contours
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        if not contours:
+            return None
+
+        # Get largest contour
+        largest_contour = max(contours, key=cv2.contourArea)
+
+        # Need at least 5 points to fit ellipse
+        if len(largest_contour) < 5:
+            # Fall back to centroid only
+            M = cv2.moments(largest_contour)
+            if M["m00"] == 0:
+                return None
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+            return (cx, cy, 0.0)  # No rotation if we can't determine it
+
+        # Fit ellipse to get orientation
+        ellipse = cv2.fitEllipse(largest_contour)
+        center, axes, angle = ellipse
+
+        # Convert angle: OpenCV gives angle where 0° is horizontal right
+        # We want 0° to be vertical up, so rotate by -90°
+        # Also need to account for which axis is major
+        rotation_angle = angle - 90.0
+
+        # Normalize to [-90, 90] range
+        while rotation_angle > 90:
+            rotation_angle -= 180
+        while rotation_angle < -90:
+            rotation_angle += 180
+
+        return (int(center[0]), int(center[1]), rotation_angle)
 
     async def run(self) -> None:
         """Main detection loop."""
@@ -194,11 +232,15 @@ class BrightnessDetectorNode:
         try:
             while self._running:
                 frame_msg: FrameMessage = await self.frame_queue.get()
-                point = self._detect_target(frame_msg.frame)
-                x, y = point if point else (None, None)
+                result = self._detect_target(frame_msg.frame)
+
+                if result:
+                    x, y, angle = result
+                else:
+                    x, y, angle = None, None, None
 
                 await self.pubsub.target_location.publish(
-                    TargetLocationMessage(x=x, y=y, timestamp=time.time())
+                    TargetLocationMessage(x=x, y=y, angle=angle, timestamp=time.time())
                 )
         finally:
             logger.info("BrightnessDetectorNode stopped")
@@ -232,7 +274,7 @@ class MotorNode:
 
     async def run(self) -> None:
         """Main motor control loop."""
-        logger.info(f"Starting MotorNode [gain={self.params.gain}, deadzone={self.params.deadzone}px]")
+        logger.info(f"Starting MotorNode [gain={self.params.gain}, deadzone={self.params.deadzone}px, roll_gain={self.params.roll_gain}]")
         self._running = True
 
         try:
@@ -247,6 +289,7 @@ class MotorNode:
                             roll_angle=self.roll_angle,
                             is_locked_x=False,
                             is_locked_y=False,
+                            is_locked_roll=False,
                             timestamp=time.time()
                         )
                     )
@@ -260,7 +303,7 @@ class MotorNode:
                 is_locked_x = abs(error_x) <= self.params.deadzone
                 is_locked_y = abs(error_y) <= self.params.deadzone
 
-                # Update servos if not locked
+                # Update pan/tilt servos if not locked
                 if not is_locked_x:
                     self.pan_angle += error_x * self.params.gain
                     self.pan_angle = float(np.clip(self.pan_angle, 0.0, 180.0))
@@ -271,13 +314,33 @@ class MotorNode:
                     self.tilt_angle = float(np.clip(self.tilt_angle, 0.0, 180.0))
                     self.kit.servo[self.params.tilt_channel].angle = self.tilt_angle
 
+                # Handle roll angle if detected
+                is_locked_roll = False
+                if msg.angle is not None:
+                    # Map rotation angle [-90, 90] to servo angle [0, 180]
+                    # -90° rotation -> 0° servo, 0° rotation -> 90° servo, +90° rotation -> 180° servo
+                    target_roll = 90.0 + msg.angle
+
+                    # Calculate roll error
+                    roll_error = target_roll - self.roll_angle
+
+                    # Check if roll is locked
+                    is_locked_roll = abs(roll_error) <= self.params.roll_deadzone
+
+                    # Update roll servo if not locked
+                    if not is_locked_roll:
+                        self.roll_angle += roll_error * self.params.roll_gain
+                        self.roll_angle = float(np.clip(self.roll_angle, 0.0, 180.0))
+                        self.kit.servo[self.params.roll_channel].angle = self.roll_angle
+
                 await self.pubsub.servo_state.publish(
                     ServoStateMessage(
                         pan_angle=self.pan_angle,
                         tilt_angle=self.tilt_angle,
-                        roll_angle= self.roll_angle,
+                        roll_angle=self.roll_angle,
                         is_locked_x=is_locked_x,
                         is_locked_y=is_locked_y,
+                        is_locked_roll=is_locked_roll,
                         timestamp=time.time()
                     )
                 )
@@ -285,9 +348,11 @@ class MotorNode:
             # Center servos
             self.kit.servo[self.params.pan_channel].angle = 90.0
             self.kit.servo[self.params.tilt_channel].angle = 90.0
+            self.kit.servo[self.params.roll_channel].angle = 90.0
             await asyncio.sleep(0.5)
             self.kit.servo[self.params.pan_channel].angle = None
             self.kit.servo[self.params.tilt_channel].angle = None
+            self.kit.servo[self.params.roll_channel].angle = None
             logger.info("MotorNode stopped")
 
     async def stop(self) -> None:
@@ -342,12 +407,23 @@ class UINode:
 
             is_locked = (
                 self.latest_servo_state.is_locked_x and
-                self.latest_servo_state.is_locked_y
+                self.latest_servo_state.is_locked_y and
+                self.latest_servo_state.is_locked_roll
                 if self.latest_servo_state else False
             )
 
             color = (0, 255, 0) if is_locked else (255, 0, 0)
             cv2.circle(frame, (x, y), 20, color, 3)
+
+            # Draw orientation line if angle is available
+            if self.latest_target.angle is not None:
+                angle_rad = np.radians(self.latest_target.angle)
+                line_length = 40
+                end_x = int(x + line_length * np.sin(angle_rad))
+                end_y = int(y - line_length * np.cos(angle_rad))  # Negative because y-axis points down
+
+                roll_color = (0, 255, 0) if (self.latest_servo_state and self.latest_servo_state.is_locked_roll) else (255, 0, 255)
+                cv2.line(frame, (x, y), (end_x, end_y), roll_color, 3)
 
             if self.latest_servo_state:
                 line_x_color = (0, 255, 0) if self.latest_servo_state.is_locked_x else (255, 255, 0)
@@ -359,7 +435,8 @@ class UINode:
         if self.latest_servo_state:
             status = "LOCKED" if (
                     self.latest_servo_state.is_locked_x and
-                    self.latest_servo_state.is_locked_y
+                    self.latest_servo_state.is_locked_y and
+                    self.latest_servo_state.is_locked_roll
             ) else "TRACKING"
             status_color = (0, 255, 0) if status == "LOCKED" else (255, 255, 0)
 
@@ -375,8 +452,21 @@ class UINode:
                 f"Tilt: {self.latest_servo_state.tilt_angle:.1f}°",
                 (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1
             )
+            cv2.putText(
+                frame,
+                f"Roll: {self.latest_servo_state.roll_angle:.1f}°",
+                (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1
+            )
 
-        cv2.putText(frame, f"FPS: {self.fps:.1f}", (10, 110),
+        # Target angle display
+        if self.latest_target and self.latest_target.angle is not None:
+            cv2.putText(
+                frame,
+                f"Target Rot: {self.latest_target.angle:.1f}°",
+                (10, 135), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 1
+            )
+
+        cv2.putText(frame, f"FPS: {self.fps:.1f}", (10, 160),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
         return frame
@@ -508,7 +598,7 @@ async def main() -> None:
     #     detector_type="brightness",
     #     vision=VisionNodeParams(width=640, height=480),
     #     brightness_detector=BrightnessDetectorParams(blur_size=21, threshold=150),
-    #     motor=MotorNodeParams(gain=0.08, deadzone=20),
+    #     motor=MotorNodeParams(gain=0.08, deadzone=20, roll_gain=0.5, roll_deadzone=10.0),
     #     ui=UINodeParams(window_name="My Custom Tracker")
     # )
 
