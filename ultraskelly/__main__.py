@@ -802,7 +802,7 @@ class UINode:
                     self.frame_count = 0
                     self.last_fps_time = time.time()
 
-                cv2.imshow(self.params.window_name, cv2.cvtColor(vis_frame, cv2.RGB2BGR))
+                cv2.imshow(self.params.window_name, cv2.cvtColor(vis_frame, cv2.COLOR_RGB2BGR))
 
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
