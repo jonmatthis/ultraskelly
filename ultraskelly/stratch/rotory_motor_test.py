@@ -11,9 +11,9 @@ encoder: RotaryEncoder = RotaryEncoder(a=16, b=12, max_steps=1000000)
 
 def move_to_position(
         target_position: int,
-        speed: float = 0.8,
+        speed: float = 1.0,
         tolerance: int = 5,
-        min_throttle: float = 0.6,
+        min_throttle: float = .8,
         max_iterations: int = 1000
 ) -> None:
     """
