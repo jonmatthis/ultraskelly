@@ -22,8 +22,8 @@ def main() -> None:
     
     # Servo channels
     pitch_channel: int = 3
-    yaw_channel: int = 7
-    roll_channel: int = 11
+    roll_channel: int = 7
+    yaw_channel: int = 11
     
     # Current angles
     pitch_angle: float = 90.0

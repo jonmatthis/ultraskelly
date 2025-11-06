@@ -43,6 +43,7 @@ class ServoStateMessage:
     """Motor node output."""
     pan_angle: float
     tilt_angle: float
+    roll_angle:float
     is_locked_x: bool
     is_locked_y: bool
     timestamp: float
@@ -105,8 +106,9 @@ class BrightnessDetectorParams(BaseModel):
 
 class MotorNodeParams(BaseModel):
     """Parameters for MotorNode."""
-    pan_channel: int = Field(default=0, ge=0, le=15)
-    tilt_channel: int = Field(default=7, ge=0, le=15)
+    pan_channel: int = Field(default=11, ge=0, le=15)
+    tilt_channel: int = Field(default=3, ge=0, le=15)
+    roll_channel: int = Field(default=7, ge=0, le=15)
     target_x: int = Field(default=320, ge=0)
     target_y: int = Field(default=240, ge=0)
     gain: float = Field(default=0.05, gt=0.0, le=1.0)
@@ -221,8 +223,10 @@ class MotorNode:
         self.kit = ServoKit(channels=16)
         self.pan_angle = 90.0
         self.tilt_angle = 90.0
+        self.roll_angle = 90.0
         self.kit.servo[params.pan_channel].angle = self.pan_angle
         self.kit.servo[params.tilt_channel].angle = self.tilt_angle
+        self.kit.servo[params.roll_channel].angle = self.roll_angle
 
         self.target_queue = pubsub.target_location.subscribe()
 
@@ -240,6 +244,7 @@ class MotorNode:
                         ServoStateMessage(
                             pan_angle=self.pan_angle,
                             tilt_angle=self.tilt_angle,
+                            roll_angle=self.roll_angle,
                             is_locked_x=False,
                             is_locked_y=False,
                             timestamp=time.time()
@@ -270,6 +275,7 @@ class MotorNode:
                     ServoStateMessage(
                         pan_angle=self.pan_angle,
                         tilt_angle=self.tilt_angle,
+                        roll_angle= self.roll_angle,
                         is_locked_x=is_locked_x,
                         is_locked_y=is_locked_y,
                         timestamp=time.time()
