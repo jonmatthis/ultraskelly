@@ -423,35 +423,64 @@ class HailoFaceDetectorNode:
         self.frame_queue = pubsub.frame.subscribe()
         self.model_cache_dir = Path(params.model_cache_dir).expanduser()
 
+        logger.info("Initializing HailoFaceDetectorNode...")
+
         # Ensure models exist
+        logger.info("Checking face detection models...")
         face_model = self._ensure_model(params.face_model_path, "scrfd_2.5g")
         landmark_model = self._ensure_model(params.landmark_model_path, "tddfa_mobilenet_v1")
 
         # Initialize Hailo device
-        self.device = VDevice()
+        logger.info("Initializing Hailo VDevice...")
+        try:
+            self.device = VDevice()
+            logger.info("✓ VDevice initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize VDevice: {e}")
+            raise
 
-        logger.info(f"Loading Hailo face models...")
-        self.face_hef = HEF(face_model)
-        self.landmark_hef = HEF(landmark_model)
+        logger.info("Loading Hailo face models...")
+        try:
+            self.face_hef = HEF(face_model)
+            logger.info("✓ Face detection HEF loaded")
+            self.landmark_hef = HEF(landmark_model)
+            logger.info("✓ Landmark detection HEF loaded")
+        except Exception as e:
+            logger.error(f"Failed to load HEF models: {e}")
+            raise
 
         # Configure models
-        self.face_network_group = self.device.configure(
-            self.face_hef,
-            ConfigureParams.create_from_hef(self.face_hef, interface=HailoStreamInterface.PCIe)
-        )[0]
+        logger.info("Configuring network groups...")
+        try:
+            self.face_network_group = self.device.configure(
+                self.face_hef,
+                ConfigureParams.create_from_hef(self.face_hef, interface=HailoStreamInterface.PCIe)
+            )[0]
+            logger.info("✓ Face network group configured")
 
-        self.landmark_network_group = self.device.configure(
-            self.landmark_hef,
-            ConfigureParams.create_from_hef(self.landmark_hef, interface=HailoStreamInterface.PCIe)
-        )[0]
+            self.landmark_network_group = self.device.configure(
+                self.landmark_hef,
+                ConfigureParams.create_from_hef(self.landmark_hef, interface=HailoStreamInterface.PCIe)
+            )[0]
+            logger.info("✓ Landmark network group configured")
+        except Exception as e:
+            logger.error(f"Failed to configure network groups: {e}")
+            raise
 
-        self.face_input_params = InputVStreamParams.make(self.face_network_group)
-        self.face_output_params = OutputVStreamParams.make(self.face_network_group)
+        logger.info("Creating VStream parameters...")
+        try:
+            self.face_input_params = InputVStreamParams.make(self.face_network_group)
+            self.face_output_params = OutputVStreamParams.make(self.face_network_group)
 
-        self.landmark_input_params = InputVStreamParams.make(self.landmark_network_group)
-        self.landmark_output_params = OutputVStreamParams.make(self.landmark_network_group)
+            self.landmark_input_params = InputVStreamParams.make(self.landmark_network_group)
+            self.landmark_output_params = OutputVStreamParams.make(self.landmark_network_group)
+            logger.info("✓ VStream parameters created")
+        except Exception as e:
+            logger.error(f"Failed to create VStream parameters: {e}")
+            raise
 
         self.frame_skip_counter = 0
+        logger.info("✓ HailoFaceDetectorNode initialized successfully")
 
     def _ensure_model(self, model_path: str, model_name: str) -> str:
         """Ensure model exists, download if necessary."""
@@ -491,8 +520,8 @@ class HailoFaceDetectorNode:
 
         return [(center_x - face_size//2, center_y - face_size//2, face_size, face_size)]
 
-    def _detect_landmarks(self, frame: np.ndarray, face_box: tuple[int, int, int, int]) -> np.ndarray:
-        """Detect 68 landmarks for a face."""
+    def _detect_landmarks_sync(self, frame: np.ndarray, face_box: tuple[int, int, int, int]) -> np.ndarray:
+        """Detect 68 landmarks for a face (synchronous - run in executor)."""
         x, y, w, h = face_box
 
         # Crop face
@@ -570,9 +599,19 @@ class HailoFaceDetectorNode:
 
         frame_skip = max(1, 30 // self.params.inference_rate)
 
+        # Use executor for blocking Hailo operations
+        executor = asyncio.get_event_loop().run_in_executor
+
         try:
             while self._running:
-                frame_msg: FrameMessage = await self.frame_queue.get()
+                try:
+                    frame_msg: FrameMessage = await asyncio.wait_for(
+                        self.frame_queue.get(),
+                        timeout=1.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("Face detector: no frames received")
+                    continue
 
                 # Skip frames to match inference rate
                 self.frame_skip_counter += 1
@@ -580,7 +619,7 @@ class HailoFaceDetectorNode:
                     continue
                 self.frame_skip_counter = 0
 
-                # Detect faces
+                # Detect faces (simplified - just use center for now)
                 face_boxes = self._detect_faces_simple(frame_msg.frame)
 
                 if not face_boxes:
@@ -600,26 +639,36 @@ class HailoFaceDetectorNode:
                     )
                     continue
 
-                # Process each face
+                # Process each face in executor (non-blocking)
                 all_landmarks = []
                 mouth_states = []
                 mouth_ratios = []
 
                 for face_box in face_boxes:
-                    landmarks = self._detect_landmarks(frame_msg.frame, face_box)
-                    all_landmarks.append(landmarks)
+                    try:
+                        # Run blocking inference in thread pool
+                        landmarks = await executor(
+                            None,
+                            self._detect_landmarks_sync,
+                            frame_msg.frame,
+                            face_box
+                        )
+                        all_landmarks.append(landmarks)
 
-                    is_open, mar = self._calculate_mouth_state(landmarks)
-                    mouth_states.append(is_open)
-                    mouth_ratios.append(mar)
+                        is_open, mar = self._calculate_mouth_state(landmarks)
+                        mouth_states.append(is_open)
+                        mouth_ratios.append(mar)
+                    except Exception as e:
+                        logger.error(f"Face processing error: {e}")
+                        continue
 
                 # Publish face data for visualization
                 await self.pubsub.face_data.publish(
                     FaceDataMessage(
                         face_boxes=face_boxes,
-                        landmarks=all_landmarks,
-                        mouth_states=mouth_states,
-                        mouth_ratios=mouth_ratios,
+                        landmarks=all_landmarks if all_landmarks else None,
+                        mouth_states=mouth_states if mouth_states else None,
+                        mouth_ratios=mouth_ratios if mouth_ratios else None,
                         timestamp=time.time()
                     )
                 )
@@ -627,22 +676,27 @@ class HailoFaceDetectorNode:
                 # Publish target location (use first face, track mouth center if enabled)
                 if self.params.track_mouth and len(all_landmarks) > 0:
                     landmarks = all_landmarks[0]
-                    # Mouth center = average of outer lip points (48-59)
-                    mouth_points = landmarks[48:60]
-                    if mouth_points.size > 0:
-                        mouth_center_x = int(np.mean(mouth_points[:, 0]))
-                        mouth_center_y = int(np.mean(mouth_points[:, 1]))
+                    if landmarks.size > 0:
+                        # Mouth center = average of outer lip points (48-59)
+                        mouth_points = landmarks[48:60]
+                        if mouth_points.size > 0 and not np.all(mouth_points == 0):
+                            mouth_center_x = int(np.mean(mouth_points[:, 0]))
+                            mouth_center_y = int(np.mean(mouth_points[:, 1]))
 
-                        await self.pubsub.target_location.publish(
-                            TargetLocationMessage(
-                                x=mouth_center_x,
-                                y=mouth_center_y,
-                                angle=None,
-                                source="face",
-                                timestamp=time.time()
+                            await self.pubsub.target_location.publish(
+                                TargetLocationMessage(
+                                    x=mouth_center_x,
+                                    y=mouth_center_y,
+                                    angle=None,
+                                    source="face",
+                                    timestamp=time.time()
+                                )
                             )
-                        )
 
+                await asyncio.sleep(0.01)  # Small yield to event loop
+
+        except Exception as e:
+            logger.error(f"HailoFaceDetectorNode error: {e}", exc_info=True)
         finally:
             logger.info("HailoFaceDetectorNode stopped")
 
@@ -1009,7 +1063,7 @@ class Launcher:
 async def main() -> None:
     """Launch with both pose and face detection."""
 
-    # Configuration: Track right wrist with pose, display face landmarks
+    # OPTION 1: Both detectors (may need debugging)
     config = LaunchConfig(
         enable_face_detection=True,
         pose_detector=PoseDetectorParams(
@@ -1020,10 +1074,10 @@ async def main() -> None:
         face_detector=HailoFaceDetectorParams(
             mouth_threshold=0.6,
             inference_rate=5,
-            track_mouth=True,  # Can switch tracking to mouth
+            track_mouth=True,
         ),
         motor=MotorNodeParams(
-            tracking_source="pose",  # Change to "face" to track mouth instead
+            tracking_source="pose",  # Change to "face" to track mouth
             gain=0.05,
             deadzone=30,
         ),
@@ -1032,6 +1086,23 @@ async def main() -> None:
             show_face=True,
         ),
     )
+
+    # OPTION 2: Just pose tracking (if face detection has issues)
+    # config = LaunchConfig(
+    #     enable_face_detection=False,
+    #     pose_detector=PoseDetectorParams(
+    #         target_keypoint=CocoKeypoint.RIGHT_WRIST,
+    #     ),
+    #     motor=MotorNodeParams(
+    #         tracking_source="pose",
+    #         gain=0.05,
+    #         deadzone=30,
+    #     ),
+    #     ui=UINodeParams(
+    #         show_pose=True,
+    #         show_face=False,
+    #     ),
+    # )
 
     launcher = Launcher(config)
     await launcher.run()
