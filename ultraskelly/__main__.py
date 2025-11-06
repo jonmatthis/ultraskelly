@@ -1,22 +1,52 @@
 """
-Async Target Tracker with Parameters and Declarative Launch System
+Async Target Tracker with Pose Estimation Integration
 
 ROS2-inspired architecture: independent nodes + parameter system + launch config.
+Now includes IMX500-based human pose tracking.
 """
 import asyncio
 import logging
+import sys
 import time
 from dataclasses import dataclass
+from enum import IntEnum
 from typing import Literal
 
 import cv2
 import numpy as np
 from adafruit_servokit import ServoKit
-from picamera2 import Picamera2
+from picamera2 import Picamera2, CompletedRequest, MappedArray
+from picamera2.devices.imx500 import IMX500, NetworkIntrinsics
+from picamera2.devices.imx500.postprocess_highernet import postprocess_higherhrnet
 from pydantic import BaseModel, Field
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# COCO Pose Keypoint Definitions
+# ============================================================================
+
+class CocoKeypoint(IntEnum):
+    """COCO pose estimation keypoint indices."""
+    NOSE = 0
+    LEFT_EYE = 1
+    RIGHT_EYE = 2
+    LEFT_EAR = 3
+    RIGHT_EAR = 4
+    LEFT_SHOULDER = 5
+    RIGHT_SHOULDER = 6
+    LEFT_ELBOW = 7
+    RIGHT_ELBOW = 8
+    LEFT_WRIST = 9
+    RIGHT_WRIST = 10
+    LEFT_HIP = 11
+    RIGHT_HIP = 12
+    LEFT_KNEE = 13
+    RIGHT_KNEE = 14
+    LEFT_ANKLE = 15
+    RIGHT_ANKLE = 16
 
 
 # ============================================================================
@@ -106,6 +136,38 @@ class BrightnessDetectorParams(BaseModel):
     threshold: int = Field(default=100, ge=0, le=255)
 
 
+class PoseDetectorParams(BaseModel):
+    """Parameters for PoseDetectorNode."""
+    model_path: str = Field(
+        default="/usr/share/imx500-models/imx500_network_higherhrnet_coco.rpk",
+        description="Path to IMX500 pose estimation model"
+    )
+    target_keypoint: CocoKeypoint = Field(
+        default=CocoKeypoint.RIGHT_WRIST,
+        description="Body part to track"
+    )
+    detection_threshold: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence for person detection"
+    )
+    keypoint_threshold: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence for keypoint detection"
+    )
+    inference_rate: int = Field(
+        default=10,
+        ge=1,
+        le=30,
+        description="Frames per second for inference"
+    )
+    width: int = Field(default=640, ge=160, le=1920)
+    height: int = Field(default=480, ge=120, le=1080)
+
+
 class MotorNodeParams(BaseModel):
     """Parameters for MotorNode."""
     pan_channel: int = Field(default=11, ge=0, le=15)
@@ -126,7 +188,7 @@ class UINodeParams(BaseModel):
 
 
 # ============================================================================
-# Vision Node
+# Vision Node (for brightness detector)
 # ============================================================================
 
 class VisionNode:
@@ -212,7 +274,6 @@ class BrightnessDetectorNode:
 
         # Convert angle: OpenCV gives angle where 0° is horizontal right
         # We want 0° to be vertical up, so rotate by -90°
-        # Also need to account for which axis is major
         rotation_angle = angle - 90.0
 
         # Normalize to [-90, 90] range
@@ -244,6 +305,161 @@ class BrightnessDetectorNode:
                 )
         finally:
             logger.info("BrightnessDetectorNode stopped")
+
+    async def stop(self) -> None:
+        self._running = False
+
+
+class PoseDetectorNode:
+    """Detects human poses using IMX500 and tracks specific body part."""
+
+    def __init__(self, pubsub: PubSub, params: PoseDetectorParams) -> None:
+        self.pubsub = pubsub
+        self.params = params
+        self._running = False
+
+        # Latest detection results (shared between callback and async task)
+        self._latest_keypoints: np.ndarray | None = None
+        self._latest_scores: np.ndarray | None = None
+        self._latest_boxes: list[np.ndarray] | None = None
+        self._detection_lock = asyncio.Lock()
+
+        # Initialize IMX500 before Picamera2
+        self.imx500 = IMX500(params.model_path)
+        intrinsics = self.imx500.network_intrinsics
+
+        if not intrinsics:
+            intrinsics = NetworkIntrinsics()
+            intrinsics.task = "pose estimation"
+        elif intrinsics.task != "pose estimation":
+            raise ValueError(f"Model is not a pose estimation task: {intrinsics.task}")
+
+        intrinsics.inference_rate = params.inference_rate
+        intrinsics.update_with_defaults()
+
+        # Initialize camera
+        self.picam2 = Picamera2(self.imx500.camera_num)
+        config = self.picam2.create_preview_configuration(
+            controls={'FrameRate': params.inference_rate},
+            buffer_count=12
+        )
+        self.picam2.configure(config)
+        self.picam2.pre_callback = self._pose_callback
+
+    def _pose_callback(self, request: CompletedRequest) -> None:
+        """Callback to process pose detection results (runs in picamera2 thread)."""
+        metadata = request.get_metadata()
+        np_outputs = self.imx500.get_outputs(metadata=metadata, add_batch=True)
+
+        if np_outputs is None:
+            return
+
+        keypoints, scores, boxes = postprocess_higherhrnet(
+            outputs=np_outputs,
+            img_size=(self.params.height, self.params.width),
+            img_w_pad=(0, 0),
+            img_h_pad=(0, 0),
+            detection_threshold=self.params.detection_threshold,
+            network_postprocess=True
+        )
+
+        # Store results (thread-safe update)
+        if scores is not None and len(scores) > 0:
+            # Reshape keypoints to (num_people, 17, 3) where 3 = [x, y, confidence]
+            self._latest_keypoints = np.reshape(np.stack(keypoints, axis=0), (len(scores), 17, 3))
+            self._latest_boxes = [np.array(b) for b in boxes]
+            self._latest_scores = np.array(scores)
+        else:
+            self._latest_keypoints = None
+            self._latest_scores = None
+            self._latest_boxes = None
+
+    def _calculate_body_angle(self, keypoints: np.ndarray) -> float | None:
+        """Calculate body orientation from shoulder line."""
+        left_shoulder = keypoints[CocoKeypoint.LEFT_SHOULDER]
+        right_shoulder = keypoints[CocoKeypoint.RIGHT_SHOULDER]
+
+        # Check confidence
+        if left_shoulder[2] < self.params.keypoint_threshold or right_shoulder[2] < self.params.keypoint_threshold:
+            return None
+
+        # Calculate angle of shoulder line
+        dx = right_shoulder[0] - left_shoulder[0]
+        dy = right_shoulder[1] - left_shoulder[1]
+
+        # Convert to degrees, 0° = vertical
+        angle = np.degrees(np.arctan2(dx, -dy))
+
+        # Normalize to [-90, 90]
+        while angle > 90:
+            angle -= 180
+        while angle < -90:
+            angle += 180
+
+        return float(angle)
+
+    def _extract_target_keypoint(self) -> tuple[int, int, float] | None:
+        """Extract target keypoint from latest detection results."""
+        if self._latest_keypoints is None or self._latest_scores is None:
+            return None
+
+        # Find person with highest score
+        best_person_idx = int(np.argmax(self._latest_scores))
+        keypoints = self._latest_keypoints[best_person_idx]
+
+        # Get target keypoint (enum value IS the index)
+        target_kp = keypoints[self.params.target_keypoint]
+
+        # Check confidence
+        if target_kp[2] < self.params.keypoint_threshold:
+            return None
+
+        x = int(target_kp[0])
+        y = int(target_kp[1])
+
+        # Calculate body orientation
+        angle = self._calculate_body_angle(keypoints)
+
+        return (x, y, angle if angle is not None else 0.0)
+
+    async def run(self) -> None:
+        """Main detection loop."""
+        logger.info(
+            f"Starting PoseDetectorNode [target={self.params.target_keypoint.name}, "
+            f"threshold={self.params.detection_threshold}]"
+        )
+
+        self.imx500.show_network_fw_progress_bar()
+        self.picam2.start(show_preview=False)
+        self.imx500.set_auto_aspect_ratio()
+
+        await asyncio.sleep(1)
+        self._running = True
+
+        try:
+            while self._running:
+                # Extract target from latest detection
+                result = self._extract_target_keypoint()
+
+                if result:
+                    x, y, angle = result
+                else:
+                    x, y, angle = None, None, None
+
+                await self.pubsub.target_location.publish(
+                    TargetLocationMessage(x=x, y=y, angle=angle, timestamp=time.time())
+                )
+
+                # Publish frames for UI
+                frame = self.picam2.capture_array()
+                await self.pubsub.frame.publish(
+                    FrameMessage(frame=frame, timestamp=time.time())
+                )
+
+                await asyncio.sleep(0.01)  # 100 Hz publishing rate
+        finally:
+            self.picam2.stop()
+            logger.info("PoseDetectorNode stopped")
 
     async def stop(self) -> None:
         self._running = False
@@ -318,7 +534,6 @@ class MotorNode:
                 is_locked_roll = False
                 if msg.angle is not None:
                     # Map rotation angle [-90, 90] to servo angle [0, 180]
-                    # -90° rotation -> 0° servo, 0° rotation -> 90° servo, +90° rotation -> 180° servo
                     target_roll = 90.0 + msg.angle
 
                     # Calculate roll error
@@ -420,7 +635,7 @@ class UINode:
                 angle_rad = np.radians(self.latest_target.angle)
                 line_length = 40
                 end_x = int(x + line_length * np.sin(angle_rad))
-                end_y = int(y - line_length * np.cos(angle_rad))  # Negative because y-axis points down
+                end_y = int(y - line_length * np.cos(angle_rad))
 
                 roll_color = (0, 255, 0) if (self.latest_servo_state and self.latest_servo_state.is_locked_roll) else (255, 0, 255)
                 cv2.line(frame, (x, y), (end_x, end_y), roll_color, 3)
@@ -462,7 +677,7 @@ class UINode:
         if self.latest_target and self.latest_target.angle is not None:
             cv2.putText(
                 frame,
-                f"Target Rot: {self.latest_target.angle:.1f}°",
+                f"Body Angle: {self.latest_target.angle:.1f}°",
                 (10, 135), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 1
             )
 
@@ -525,13 +740,14 @@ class UINode:
 class LaunchConfig(BaseModel):
     """Declarative launch configuration."""
 
-    detector_type: Literal["brightness"] = Field(
-        default="brightness",
+    detector_type: Literal["brightness", "pose"] = Field(
+        default="pose",
         description="Which detector to use"
     )
 
     vision: VisionNodeParams = Field(default_factory=VisionNodeParams)
     brightness_detector: BrightnessDetectorParams = Field(default_factory=BrightnessDetectorParams)
+    pose_detector: PoseDetectorParams = Field(default_factory=PoseDetectorParams)
     motor: MotorNodeParams = Field(default_factory=MotorNodeParams)
     ui: UINodeParams = Field(default_factory=UINodeParams)
 
@@ -542,21 +758,25 @@ class Launcher:
     def __init__(self, config: LaunchConfig) -> None:
         self.config = config
         self.pubsub = PubSub()
-        self.nodes: list[VisionNode | BrightnessDetectorNode | MotorNode | UINode] = []
+        self.nodes: list[VisionNode | BrightnessDetectorNode | PoseDetectorNode | MotorNode | UINode] = []
 
     def _create_nodes(self) -> None:
         """Instantiate nodes based on config."""
         logger.info("Creating nodes from launch config...")
 
-        # Always create vision, motor, and UI
-        self.nodes.append(VisionNode(self.pubsub, self.config.vision))
+        # Always create motor and UI
         self.nodes.append(MotorNode(self.pubsub, self.config.motor))
         self.nodes.append(UINode(self.pubsub, self.config.ui))
 
         # Create detector based on type
         if self.config.detector_type == "brightness":
+            self.nodes.append(VisionNode(self.pubsub, self.config.vision))
             self.nodes.append(
                 BrightnessDetectorNode(self.pubsub, self.config.brightness_detector)
+            )
+        elif self.config.detector_type == "pose":
+            self.nodes.append(
+                PoseDetectorNode(self.pubsub, self.config.pose_detector)
             )
         else:
             raise ValueError(f"Unknown detector type: {self.config.detector_type}")
@@ -590,22 +810,34 @@ class Launcher:
 async def main() -> None:
     """Launch with declarative config."""
 
-    # Example 1: Default config
-    config = LaunchConfig()
+    # Example 1: Default pose tracking (right wrist)
+    config = LaunchConfig(detector_type="pose")
 
-    # Example 2: Custom parameters
+    # Example 2: Track different body part
     # config = LaunchConfig(
-    #     detector_type="brightness",
-    #     vision=VisionNodeParams(width=640, height=480),
-    #     brightness_detector=BrightnessDetectorParams(blur_size=21, threshold=150),
-    #     motor=MotorNodeParams(gain=0.08, deadzone=20, roll_gain=0.5, roll_deadzone=10.0),
-    #     ui=UINodeParams(window_name="My Custom Tracker")
+    #     detector_type="pose",
+    #     pose_detector=PoseDetectorParams(
+    #         target_keypoint=CocoKeypoint.NOSE,  # Track nose instead
+    #         detection_threshold=0.4,
+    #         keypoint_threshold=0.4,
+    #     ),
+    #     motor=MotorNodeParams(gain=0.08, deadzone=20),
     # )
 
-    # Example 3: Load from file
-    # import json
-    # with open("launch_config.json") as f:
-    #     config = LaunchConfig(**json.load(f))
+    # Example 3: Track left hand
+    # config = LaunchConfig(
+    #     detector_type="pose",
+    #     pose_detector=PoseDetectorParams(
+    #         target_keypoint=CocoKeypoint.LEFT_WRIST,
+    #     ),
+    # )
+
+    # Example 4: Brightness detector (original behavior)
+    # config = LaunchConfig(
+    #     detector_type="brightness",
+    #     brightness_detector=BrightnessDetectorParams(blur_size=21, threshold=150),
+    #     motor=MotorNodeParams(gain=0.08, deadzone=20),
+    # )
 
     launcher = Launcher(config)
     await launcher.run()
