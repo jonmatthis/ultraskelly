@@ -2,7 +2,7 @@
 Async Target Tracker with Pose Estimation Integration
 
 ROS2-inspired architecture: independent nodes + parameter system + launch config.
-Now includes IMX500-based human pose tracking with roll stabilization.
+Now includes IMX500-based human pose tracking.
 """
 import asyncio
 import logging
@@ -151,10 +151,10 @@ class PubSub:
     """Pub/sub system."""
 
     def __init__(self) -> None:
-        self.frame = Topic(name="frame")
-        self.target_location = Topic(name="target_location")
-        self.servo_state = Topic(name="servo_state")
-        self.pose_data = Topic(name="pose_data")
+        self.frame = Topic("frame")
+        self.target_location = Topic("target_location")
+        self.servo_state = Topic("servo_state")
+        self.pose_data = Topic("pose_data")
 
 
 # ============================================================================
@@ -180,7 +180,7 @@ class PoseDetectorParams(BaseModel):
         description="Path to IMX500 pose estimation model"
     )
     target_keypoint: CocoKeypoint = Field(
-        default=CocoKeypoint.NOSE,
+        default=CocoKeypoint.RIGHT_WRIST,
         description="Body part to track"
     )
     detection_threshold: float = Field(
@@ -214,7 +214,7 @@ class MotorNodeParams(BaseModel):
     target_y: int = Field(default=240, ge=0)
     gain: float = Field(default=0.05, gt=0.0, le=1.0)
     roll_gain: float = Field(default=0.3, gt=0.0, le=1.0, description="How aggressively to match roll angle")
-    roll_smoothing: float = Field(default=0.7, ge=0.0, le=1.0, description="Roll angle smoothing factor (higher = more smoothing)")
+    roll_smoothing: float = Field(default=0.7, ge=0.0, le=1.0, description="Roll angle smoothing (higher = more smoothing)")
     deadzone: int = Field(default=30, ge=0)
     roll_deadzone: float = Field(default=5.0, ge=0.0, description="Roll angle deadzone in degrees")
 
@@ -248,7 +248,7 @@ class VisionNode:
         """Main vision node loop."""
         logger.info(f"Starting VisionNode [{self.params.width}x{self.params.height}]")
         self.picam2.start()
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(1)
         self._running = True
 
         try:
@@ -281,27 +281,14 @@ class BrightnessDetectorNode:
 
     def _detect_target(self, frame: np.ndarray) -> tuple[int, int, float] | None:
         """Find brightest point and its orientation in frame."""
-        gray = cv2.cvtColor(src=frame, code=cv2.COLOR_RGB2GRAY)
-        blurred = cv2.GaussianBlur(
-            src=gray,
-            ksize=(self.params.blur_size, self.params.blur_size),
-            sigmaX=0
-        )
+        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        blurred = cv2.GaussianBlur(gray, (self.params.blur_size, self.params.blur_size), 0)
 
         # Threshold to get bright region
-        _, binary = cv2.threshold(
-            src=blurred,
-            thresh=self.params.threshold,
-            maxval=255,
-            type=cv2.THRESH_BINARY
-        )
+        _, binary = cv2.threshold(blurred, self.params.threshold, 255, cv2.THRESH_BINARY)
 
         # Find contours
-        contours, _ = cv2.findContours(
-            image=binary,
-            mode=cv2.RETR_EXTERNAL,
-            method=cv2.CHAIN_APPROX_SIMPLE
-        )
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         if not contours:
             return None
@@ -312,7 +299,7 @@ class BrightnessDetectorNode:
         # Need at least 5 points to fit ellipse
         if len(largest_contour) < 5:
             # Fall back to centroid only
-            M = cv2.moments(array=largest_contour)
+            M = cv2.moments(largest_contour)
             if M["m00"] == 0:
                 return None
             cx = int(M["m10"] / M["m00"])
@@ -320,7 +307,7 @@ class BrightnessDetectorNode:
             return (cx, cy, 0.0)  # No rotation if we can't determine it
 
         # Fit ellipse to get orientation
-        ellipse = cv2.fitEllipse(points=largest_contour)
+        ellipse = cv2.fitEllipse(largest_contour)
         center, axes, angle = ellipse
 
         # Convert angle: OpenCV gives angle where 0° is horizontal right
@@ -338,15 +325,13 @@ class BrightnessDetectorNode:
     async def run(self) -> None:
         """Main detection loop."""
         logger.info(
-            f"Starting BrightnessDetectorNode [blur={self.params.blur_size}, "
-            f"threshold={self.params.threshold}]"
-        )
+            f"Starting BrightnessDetectorNode [blur={self.params.blur_size}, threshold={self.params.threshold}]")
         self._running = True
 
         try:
             while self._running:
                 frame_msg: FrameMessage = await self.frame_queue.get()
-                result = self._detect_target(frame=frame_msg.frame)
+                result = self._detect_target(frame_msg.frame)
 
                 if result:
                     x, y, angle = result
@@ -378,7 +363,7 @@ class PoseDetectorNode:
         self._detection_lock = asyncio.Lock()
 
         # Initialize IMX500 before Picamera2
-        self.imx500 = IMX500(model_file_or_dir=params.model_path)
+        self.imx500 = IMX500(params.model_path)
         intrinsics = self.imx500.network_intrinsics
 
         if not intrinsics:
@@ -391,12 +376,12 @@ class PoseDetectorNode:
         intrinsics.update_with_defaults()
 
         # Initialize camera
-        self.picam2 = Picamera2(camera_num=self.imx500.camera_num)
+        self.picam2 = Picamera2(self.imx500.camera_num)
         config = self.picam2.create_preview_configuration(
             controls={'FrameRate': params.inference_rate},
             buffer_count=12
         )
-        self.picam2.configure(config=config)
+        self.picam2.configure(config)
         self.picam2.pre_callback = self._pose_callback
 
     def _pose_callback(self, request: CompletedRequest) -> None:
@@ -433,8 +418,7 @@ class PoseDetectorNode:
         right_shoulder = keypoints[CocoKeypoint.RIGHT_SHOULDER]
 
         # Check confidence
-        if (left_shoulder[2] < self.params.keypoint_threshold or
-                right_shoulder[2] < self.params.keypoint_threshold):
+        if left_shoulder[2] < self.params.keypoint_threshold or right_shoulder[2] < self.params.keypoint_threshold:
             return None
 
         # Calculate angle of shoulder line
@@ -472,7 +456,7 @@ class PoseDetectorNode:
         y = int(target_kp[1])
 
         # Calculate body orientation
-        angle = self._calculate_body_angle(keypoints=keypoints)
+        angle = self._calculate_body_angle(keypoints)
 
         return (x, y, angle if angle is not None else 0.0)
 
@@ -487,7 +471,7 @@ class PoseDetectorNode:
         self.picam2.start(show_preview=False)
         self.imx500.set_auto_aspect_ratio()
 
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(1)
         self._running = True
 
         try:
@@ -550,17 +534,14 @@ class MotorNode:
         self.kit.servo[params.tilt_channel].angle = self.tilt_angle
         self.kit.servo[params.roll_channel].angle = self.roll_angle
 
-        # Roll angle smoothing to prevent oscillations from detection noise
+        # Roll angle smoothing to prevent oscillations
         self.smoothed_target_roll: float | None = None
 
         self.target_queue = pubsub.target_location.subscribe()
 
     async def run(self) -> None:
         """Main motor control loop."""
-        logger.info(
-            f"Starting MotorNode [gain={self.params.gain}, deadzone={self.params.deadzone}px, "
-            f"roll_gain={self.params.roll_gain}, roll_smoothing={self.params.roll_smoothing}]"
-        )
+        logger.info(f"Starting MotorNode [gain={self.params.gain}, deadzone={self.params.deadzone}px, roll_gain={self.params.roll_gain}]")
         self._running = True
 
         try:
@@ -685,12 +666,7 @@ class UINode:
         self.last_fps_time = time.time()
         self.fps = 0.0
 
-    def _draw_skeleton(
-        self,
-        frame: np.ndarray,
-        keypoints: np.ndarray,
-        confidence_threshold: float = 0.3
-    ) -> None:
+    def _draw_skeleton(self, frame: np.ndarray, keypoints: np.ndarray, confidence_threshold: float = 0.3) -> None:
         """Draw skeleton on frame for a single person."""
         # Draw bones
         for kp1, kp2 in SKELETON_CONNECTIONS:
@@ -701,7 +677,7 @@ class UINode:
             if pt1[2] > confidence_threshold and pt2[2] > confidence_threshold:
                 x1, y1 = int(pt1[0]), int(pt1[1])
                 x2, y2 = int(pt2[0]), int(pt2[1])
-                cv2.line(img=frame, pt1=(x1, y1), pt2=(x2, y2), color=(0, 255, 255), thickness=2)
+                cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
 
         # Draw keypoints on top of bones
         for i, kp in enumerate(keypoints):
@@ -714,8 +690,8 @@ class UINode:
                     color = (0, 255, 0)  # Green
                 else:  # Legs
                     color = (0, 0, 255)  # Red
-                cv2.circle(img=frame, center=(x, y), radius=5, color=color, thickness=-1)
-                cv2.circle(img=frame, center=(x, y), radius=6, color=(255, 255, 255), thickness=1)
+                cv2.circle(frame, (x, y), 5, color, -1)
+                cv2.circle(frame, (x, y), 6, (255, 255, 255), 1)
 
     def _draw_visualization(self, frame: np.ndarray) -> np.ndarray:
         """Draw tracking visualization on frame."""
@@ -726,19 +702,18 @@ class UINode:
         # Draw all detected skeletons
         if self.latest_pose_data and self.latest_pose_data.keypoints is not None:
             for person_keypoints in self.latest_pose_data.keypoints:
-                self._draw_skeleton(frame=frame, keypoints=person_keypoints, confidence_threshold=0.3)
+                self._draw_skeleton(frame, person_keypoints, confidence_threshold=0.3)
 
         # Center crosshair
-        cv2.line(img=frame, pt1=(center_x, 0), pt2=(center_x, h), color=(255, 255, 255), thickness=2)
-        cv2.line(img=frame, pt1=(0, center_y), pt2=(w, center_y), color=(255, 255, 255), thickness=2)
+        cv2.line(frame, (center_x, 0), (center_x, h), (255, 255, 255), 2)
+        cv2.line(frame, (0, center_y), (w, center_y), (255, 255, 255), 2)
 
         # Deadzone box
         cv2.rectangle(
-            img=frame,
-            pt1=(center_x - self.params.deadzone, center_y - self.params.deadzone),
-            pt2=(center_x + self.params.deadzone, center_y + self.params.deadzone),
-            color=(128, 128, 128),
-            thickness=1
+            frame,
+            (center_x - self.params.deadzone, center_y - self.params.deadzone),
+            (center_x + self.params.deadzone, center_y + self.params.deadzone),
+            (128, 128, 128), 1
         )
 
         # Target point
@@ -754,7 +729,7 @@ class UINode:
             )
 
             color = (0, 255, 0) if is_locked else (255, 0, 0)
-            cv2.circle(img=frame, center=(x, y), radius=20, color=color, thickness=3)
+            cv2.circle(frame, (x, y), 20, color, 3)
 
             # Draw orientation line if angle is available
             if self.latest_target.angle is not None:
@@ -763,18 +738,14 @@ class UINode:
                 end_x = int(x + line_length * np.sin(angle_rad))
                 end_y = int(y - line_length * np.cos(angle_rad))
 
-                roll_color = (
-                    (0, 255, 0)
-                    if (self.latest_servo_state and self.latest_servo_state.is_locked_roll)
-                    else (255, 0, 255)
-                )
-                cv2.line(img=frame, pt1=(x, y), pt2=(end_x, end_y), color=roll_color, thickness=3)
+                roll_color = (0, 255, 0) if (self.latest_servo_state and self.latest_servo_state.is_locked_roll) else (255, 0, 255)
+                cv2.line(frame, (x, y), (end_x, end_y), roll_color, 3)
 
             if self.latest_servo_state:
                 line_x_color = (0, 255, 0) if self.latest_servo_state.is_locked_x else (255, 255, 0)
                 line_y_color = (0, 255, 0) if self.latest_servo_state.is_locked_y else (255, 255, 0)
-                cv2.line(img=frame, pt1=(center_x, y), pt2=(x, y), color=line_x_color, thickness=2)
-                cv2.line(img=frame, pt1=(x, center_y), pt2=(x, y), color=line_y_color, thickness=2)
+                cv2.line(frame, (center_x, y), (x, y), line_x_color, 2)
+                cv2.line(frame, (x, center_y), (x, y), line_y_color, 2)
 
         # Status overlay
         if self.latest_servo_state:
@@ -785,64 +756,34 @@ class UINode:
             ) else "TRACKING"
             status_color = (0, 255, 0) if status == "LOCKED" else (255, 255, 0)
 
+            cv2.putText(frame, status, (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
             cv2.putText(
-                img=frame,
-                text=status,
-                org=(10, 30),
-                fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                fontScale=0.7,
-                color=status_color,
-                thickness=2
+                frame,
+                f"Pan: {self.latest_servo_state.pan_angle:.1f}°",
+                (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1
             )
             cv2.putText(
-                img=frame,
-                text=f"Pan: {self.latest_servo_state.pan_angle:.1f}°",
-                org=(10, 60),
-                fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                fontScale=0.6,
-                color=(255, 255, 255),
-                thickness=1
+                frame,
+                f"Tilt: {self.latest_servo_state.tilt_angle:.1f}°",
+                (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1
             )
             cv2.putText(
-                img=frame,
-                text=f"Tilt: {self.latest_servo_state.tilt_angle:.1f}°",
-                org=(10, 85),
-                fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                fontScale=0.6,
-                color=(255, 255, 255),
-                thickness=1
-            )
-            cv2.putText(
-                img=frame,
-                text=f"Roll: {self.latest_servo_state.roll_angle:.1f}°",
-                org=(10, 110),
-                fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                fontScale=0.6,
-                color=(255, 255, 255),
-                thickness=1
+                frame,
+                f"Roll: {self.latest_servo_state.roll_angle:.1f}°",
+                (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1
             )
 
         # Target angle display
         if self.latest_target and self.latest_target.angle is not None:
             cv2.putText(
-                img=frame,
-                text=f"Body Angle: {self.latest_target.angle:.1f}°",
-                org=(10, 135),
-                fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                fontScale=0.6,
-                color=(255, 0, 255),
-                thickness=1
+                frame,
+                f"Body Angle: {self.latest_target.angle:.1f}°",
+                (10, 135), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 1
             )
 
-        cv2.putText(
-            img=frame,
-            text=f"FPS: {self.fps:.1f}",
-            org=(10, 160),
-            fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-            fontScale=0.6,
-            color=(255, 255, 255),
-            thickness=1
-        )
+        cv2.putText(frame, f"FPS: {self.fps:.1f}", (10, 160),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
         return frame
 
@@ -873,7 +814,7 @@ class UINode:
         try:
             while self._running:
                 frame_msg: FrameMessage = await self.frame_queue.get()
-                vis_frame = self._draw_visualization(frame=frame_msg.frame)
+                vis_frame = self._draw_visualization(frame_msg.frame)
 
                 self.frame_count += 1
                 if time.time() - self.last_fps_time >= 1.0:
@@ -881,12 +822,9 @@ class UINode:
                     self.frame_count = 0
                     self.last_fps_time = time.time()
 
-                cv2.imshow(
-                    winname=self.params.window_name,
-                    mat=cv2.cvtColor(src=vis_frame, code=cv2.COLOR_RGB2BGR)
-                )
+                cv2.imshow(self.params.window_name, cv2.cvtColor(vis_frame, cv2.COLOR_RGB2BGR))
 
-                if cv2.waitKey(delay=1) & 0xFF == ord('q'):
+                if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
 
                 await asyncio.sleep(0.001)
@@ -931,18 +869,18 @@ class Launcher:
         logger.info("Creating nodes from launch config...")
 
         # Always create motor and UI
-        self.nodes.append(MotorNode(pubsub=self.pubsub, params=self.config.motor))
-        self.nodes.append(UINode(pubsub=self.pubsub, params=self.config.ui))
+        self.nodes.append(MotorNode(self.pubsub, self.config.motor))
+        self.nodes.append(UINode(self.pubsub, self.config.ui))
 
         # Create detector based on type
         if self.config.detector_type == "brightness":
-            self.nodes.append(VisionNode(pubsub=self.pubsub, params=self.config.vision))
+            self.nodes.append(VisionNode(self.pubsub, self.config.vision))
             self.nodes.append(
-                BrightnessDetectorNode(pubsub=self.pubsub, params=self.config.brightness_detector)
+                BrightnessDetectorNode(self.pubsub, self.config.brightness_detector)
             )
         elif self.config.detector_type == "pose":
             self.nodes.append(
-                PoseDetectorNode(pubsub=self.pubsub, params=self.config.pose_detector)
+                PoseDetectorNode(self.pubsub, self.config.pose_detector)
             )
         else:
             raise ValueError(f"Unknown detector type: {self.config.detector_type}")
@@ -1005,7 +943,7 @@ async def main() -> None:
     #     motor=MotorNodeParams(gain=0.08, deadzone=20),
     # )
 
-    launcher = Launcher(config=config)
+    launcher = Launcher(config)
     await launcher.run()
 
 
