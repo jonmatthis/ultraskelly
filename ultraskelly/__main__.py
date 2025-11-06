@@ -180,7 +180,7 @@ class PoseDetectorParams(BaseModel):
         description="Path to IMX500 pose estimation model"
     )
     target_keypoint: CocoKeypoint = Field(
-        default=CocoKeypoint.RIGHT_WRIST,
+        default=CocoKeypoint.NOSE,
         description="Body part to track"
     )
     detection_threshold: float = Field(
@@ -212,12 +212,16 @@ class MotorNodeParams(BaseModel):
     roll_channel: int = Field(default=7, ge=0, le=15)
     target_x: int = Field(default=320, ge=0)
     target_y: int = Field(default=240, ge=0)
+    offset_x_ratio: float = Field(default=-0.1, ge=-1.0, le=1.0, description="Offset target value in x direction (screen ratio)"
+    offset_y_ratio: float = Field(default=-0.1, ge=-1.0, le=1.0, description="Offset target value in x direction (screen ratio)"
     gain: float = Field(default=0.05, gt=0.0, le=1.0)
     roll_gain: float = Field(default=0.3, gt=0.0, le=1.0, description="How aggressively to match roll angle")
     roll_smoothing: float = Field(default=0.7, ge=0.0, le=1.0, description="Roll angle smoothing (higher = more smoothing)")
     deadzone: int = Field(default=30, ge=0)
     roll_deadzone: float = Field(default=5.0, ge=0.0, description="Roll angle deadzone in degrees")
 
+    @property
+    def offset_x
 
 class UINodeParams(BaseModel):
     """Parameters for UINode."""
@@ -563,8 +567,8 @@ class MotorNode:
                     continue
 
                 # Calculate errors
-                error_x = msg.x - self.params.target_x
-                error_y = msg.y - self.params.target_y
+                error_x = msg.x - self.params.target_x - x_offset
+                error_y = msg.y - self.params.target_y - y_offset
 
                 # Check lock status
                 is_locked_x = abs(error_x) <= self.params.deadzone
