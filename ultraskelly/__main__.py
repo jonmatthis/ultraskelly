@@ -49,6 +49,33 @@ class CocoKeypoint(IntEnum):
     RIGHT_ANKLE = 16
 
 
+# Skeleton connections (bones) for visualization
+SKELETON_CONNECTIONS: list[tuple[CocoKeypoint, CocoKeypoint]] = [
+    # Head
+    (CocoKeypoint.NOSE, CocoKeypoint.LEFT_EYE),
+    (CocoKeypoint.NOSE, CocoKeypoint.RIGHT_EYE),
+    (CocoKeypoint.LEFT_EYE, CocoKeypoint.LEFT_EAR),
+    (CocoKeypoint.RIGHT_EYE, CocoKeypoint.RIGHT_EAR),
+    # Torso
+    (CocoKeypoint.LEFT_SHOULDER, CocoKeypoint.RIGHT_SHOULDER),
+    (CocoKeypoint.LEFT_SHOULDER, CocoKeypoint.LEFT_HIP),
+    (CocoKeypoint.RIGHT_SHOULDER, CocoKeypoint.RIGHT_HIP),
+    (CocoKeypoint.LEFT_HIP, CocoKeypoint.RIGHT_HIP),
+    # Left arm
+    (CocoKeypoint.LEFT_SHOULDER, CocoKeypoint.LEFT_ELBOW),
+    (CocoKeypoint.LEFT_ELBOW, CocoKeypoint.LEFT_WRIST),
+    # Right arm
+    (CocoKeypoint.RIGHT_SHOULDER, CocoKeypoint.RIGHT_ELBOW),
+    (CocoKeypoint.RIGHT_ELBOW, CocoKeypoint.RIGHT_WRIST),
+    # Left leg
+    (CocoKeypoint.LEFT_HIP, CocoKeypoint.LEFT_KNEE),
+    (CocoKeypoint.LEFT_KNEE, CocoKeypoint.LEFT_ANKLE),
+    # Right leg
+    (CocoKeypoint.RIGHT_HIP, CocoKeypoint.RIGHT_KNEE),
+    (CocoKeypoint.RIGHT_KNEE, CocoKeypoint.RIGHT_ANKLE),
+]
+
+
 # ============================================================================
 # Messages
 # ============================================================================
@@ -78,6 +105,15 @@ class ServoStateMessage:
     is_locked_x: bool
     is_locked_y: bool
     is_locked_roll: bool
+    timestamp: float
+
+
+@dataclass(frozen=True)
+class PoseDataMessage:
+    """Full pose detection data for visualization."""
+    keypoints: np.ndarray | None  # Shape: (num_people, 17, 3) where 3 = [x, y, confidence]
+    scores: np.ndarray | None  # Shape: (num_people,)
+    boxes: list[np.ndarray] | None
     timestamp: float
 
 
@@ -118,6 +154,7 @@ class PubSub:
         self.frame = Topic("frame")
         self.target_location = Topic("target_location")
         self.servo_state = Topic("servo_state")
+        self.pose_data = Topic("pose_data")
 
 
 # ============================================================================
@@ -450,6 +487,16 @@ class PoseDetectorNode:
                     TargetLocationMessage(x=x, y=y, angle=angle, timestamp=time.time())
                 )
 
+                # Publish full pose data for visualization
+                await self.pubsub.pose_data.publish(
+                    PoseDataMessage(
+                        keypoints=self._latest_keypoints,
+                        scores=self._latest_scores,
+                        boxes=self._latest_boxes,
+                        timestamp=time.time()
+                    )
+                )
+
                 # Publish frames for UI
                 frame = self.picam2.capture_array()
                 await self.pubsub.frame.publish(
@@ -589,19 +636,53 @@ class UINode:
         self.frame_queue = pubsub.frame.subscribe()
         self.target_queue = pubsub.target_location.subscribe()
         self.servo_state_queue = pubsub.servo_state.subscribe()
+        self.pose_data_queue = pubsub.pose_data.subscribe()
 
         self.latest_target: TargetLocationMessage | None = None
         self.latest_servo_state: ServoStateMessage | None = None
+        self.latest_pose_data: PoseDataMessage | None = None
 
         self.frame_count = 0
         self.last_fps_time = time.time()
         self.fps = 0.0
+
+    def _draw_skeleton(self, frame: np.ndarray, keypoints: np.ndarray, confidence_threshold: float = 0.3) -> None:
+        """Draw skeleton on frame for a single person."""
+        # Draw bones
+        for kp1, kp2 in SKELETON_CONNECTIONS:
+            pt1 = keypoints[kp1]
+            pt2 = keypoints[kp2]
+
+            # Only draw if both keypoints are confident
+            if pt1[2] > confidence_threshold and pt2[2] > confidence_threshold:
+                x1, y1 = int(pt1[0]), int(pt1[1])
+                x2, y2 = int(pt2[0]), int(pt2[1])
+                cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
+
+        # Draw keypoints on top of bones
+        for i, kp in enumerate(keypoints):
+            if kp[2] > confidence_threshold:
+                x, y = int(kp[0]), int(kp[1])
+                # Different color for different body parts
+                if i <= 4:  # Head
+                    color = (255, 0, 0)  # Blue
+                elif i <= 10:  # Arms
+                    color = (0, 255, 0)  # Green
+                else:  # Legs
+                    color = (0, 0, 255)  # Red
+                cv2.circle(frame, (x, y), 5, color, -1)
+                cv2.circle(frame, (x, y), 6, (255, 255, 255), 1)
 
     def _draw_visualization(self, frame: np.ndarray) -> np.ndarray:
         """Draw tracking visualization on frame."""
         h, w = frame.shape[:2]
         center_x = w // 2
         center_y = h // 2
+
+        # Draw all detected skeletons
+        if self.latest_pose_data and self.latest_pose_data.keypoints is not None:
+            for person_keypoints in self.latest_pose_data.keypoints:
+                self._draw_skeleton(frame, person_keypoints, confidence_threshold=0.3)
 
         # Center crosshair
         cv2.line(frame, (center_x, 0), (center_x, h), (255, 255, 255), 2)
@@ -695,6 +776,9 @@ class UINode:
 
                 while not self.servo_state_queue.empty():
                     self.latest_servo_state = self.servo_state_queue.get_nowait()
+
+                while not self.pose_data_queue.empty():
+                    self.latest_pose_data = self.pose_data_queue.get_nowait()
 
                 await asyncio.sleep(0.001)
             except asyncio.CancelledError:
