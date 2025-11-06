@@ -3,6 +3,16 @@ Async Target Tracker with Dual Detection: IMX500 Pose + Hailo Face Landmarks
 
 ROS2-inspired architecture with simultaneous pose and face detection.
 Hailo inference runs in dedicated worker thread to avoid blocking async loop.
+
+Usage:
+    python __main__.py           # Normal mode
+    python __main__.py --debug   # Enable debug logging to troubleshoot
+
+Troubleshooting:
+    - If you see "Face: NO DATA" on screen, the worker thread isn't publishing
+    - Run with --debug to see detailed logging from worker thread
+    - Check that Hailo models downloaded successfully
+    - Verify Hailo device: hailortcli fw-control identify
 """
 import asyncio
 import logging
@@ -477,14 +487,18 @@ class HailoFaceDetectorNode:
             raise RuntimeError(f"Failed to download {model_name}: {e}")
 
     def _detect_faces_simple(self, frame: np.ndarray) -> list[tuple[int, int, int, int]]:
-        """Simplified face detection - returns list of (x, y, w, h)."""
-        # For now, return a dummy face box covering center of frame
-        # You'll need to implement actual SCRFD parsing based on model output
+        """Simplified face detection - returns dummy box for now.
+
+        TODO: Implement real SCRFD inference and parsing.
+        """
+        # Return a visible dummy face box for testing
         h, w = frame.shape[:2]
         center_x, center_y = w // 2, h // 2
         face_size = min(w, h) // 3
 
-        return [(center_x - face_size//2, center_y - face_size//2, face_size, face_size)]
+        dummy_box = (center_x - face_size//2, center_y - face_size//2, face_size, face_size)
+        logger.debug(f"Returning dummy face box: {dummy_box}")
+        return [dummy_box]
 
     def _initialize_hailo_resources(self) -> None:
         """Initialize Hailo resources (must be called from worker thread)."""
@@ -544,12 +558,14 @@ class HailoFaceDetectorNode:
             self._initialize_hailo_resources()
 
             frame_skip = max(1, 30 // self.params.inference_rate)
+            frame_counter = 0
 
             while self._running:
                 try:
                     # Blocking get from async queue (with timeout)
                     try:
                         frame_msg = self.frame_queue.get_nowait()
+                        frame_counter += 1
                     except:
                         time.sleep(0.01)
                         continue
@@ -560,8 +576,11 @@ class HailoFaceDetectorNode:
                         continue
                     self.frame_skip_counter = 0
 
+                    logger.debug(f"Processing frame {frame_counter}")
+
                     # Detect faces (simplified)
                     face_boxes = self._detect_faces_simple(frame_msg.frame)
+                    logger.debug(f"Detected {len(face_boxes)} faces")
 
                     if not face_boxes:
                         # Publish empty data
@@ -592,19 +611,23 @@ class HailoFaceDetectorNode:
                     mouth_states = []
                     mouth_ratios = []
 
-                    for face_box in face_boxes:
+                    for i, face_box in enumerate(face_boxes):
                         try:
+                            logger.debug(f"Processing face {i}: {face_box}")
                             landmarks = self._detect_landmarks_sync(frame_msg.frame, face_box)
+                            logger.debug(f"Got {len(landmarks)} landmarks")
                             all_landmarks.append(landmarks)
 
                             is_open, mar = self._calculate_mouth_state(landmarks)
                             mouth_states.append(is_open)
                             mouth_ratios.append(mar)
+                            logger.debug(f"Mouth: {'OPEN' if is_open else 'CLOSED'} (MAR={mar:.3f})")
                         except Exception as e:
-                            logger.error(f"Face processing error: {e}")
+                            logger.error(f"Face processing error: {e}", exc_info=True)
                             continue
 
                     # Publish face data
+                    logger.debug(f"Publishing face data with {len(all_landmarks)} faces")
                     asyncio.run_coroutine_threadsafe(
                         self.pubsub.face_data.publish(
                             FaceDataMessage(
@@ -627,6 +650,7 @@ class HailoFaceDetectorNode:
                                 mouth_center_x = int(np.mean(mouth_points[:, 0]))
                                 mouth_center_y = int(np.mean(mouth_points[:, 1]))
 
+                                logger.debug(f"Publishing face target: ({mouth_center_x}, {mouth_center_y})")
                                 asyncio.run_coroutine_threadsafe(
                                     self.pubsub.target_location.publish(
                                         TargetLocationMessage(
@@ -905,6 +929,10 @@ class UINode:
 
     def _draw_face_landmarks(self, frame: np.ndarray, landmarks: np.ndarray, is_mouth_open: bool) -> None:
         """Draw 68 facial landmarks."""
+        if landmarks is None or landmarks.size == 0:
+            logger.debug("No landmarks to draw")
+            return
+
         mouth_color = (0, 0, 255) if is_mouth_open else (255, 0, 0)
 
         for i, (x, y) in enumerate(landmarks.astype(int)):
@@ -915,6 +943,8 @@ class UINode:
                 color = (0, 255, 255)
                 radius = 2
             cv2.circle(frame, (x, y), radius, color, -1)
+
+        logger.debug(f"Drew {len(landmarks)} facial landmarks")
 
     def _draw_visualization(self, frame: np.ndarray) -> np.ndarray:
         """Draw all tracking visualizations."""
@@ -929,6 +959,8 @@ class UINode:
 
         # Draw face landmarks
         if self.params.show_face and self.latest_face_data:
+            logger.debug(f"Drawing face data: boxes={self.latest_face_data.face_boxes is not None}, "
+                        f"landmarks={self.latest_face_data.landmarks is not None}")
             if self.latest_face_data.landmarks:
                 for i, landmarks in enumerate(self.latest_face_data.landmarks):
                     is_open = self.latest_face_data.mouth_states[i] if self.latest_face_data.mouth_states else False
@@ -936,8 +968,10 @@ class UINode:
 
             # Draw face boxes
             if self.latest_face_data.face_boxes:
+                logger.debug(f"Drawing {len(self.latest_face_data.face_boxes)} face boxes")
                 for x, y, w, h in self.latest_face_data.face_boxes:
                     cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 255, 0), 2)
+                    cv2.putText(frame, "FACE", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
 
         # Center crosshair
         cv2.line(frame, (center_x, 0), (center_x, h), (255, 255, 255), 2)
@@ -984,11 +1018,28 @@ class UINode:
             y_offset += 25
 
         # Face detection info
-        if self.latest_face_data and self.latest_face_data.mouth_states:
-            for i, (is_open, mar) in enumerate(zip(self.latest_face_data.mouth_states, self.latest_face_data.mouth_ratios)):
-                status = "OPEN" if is_open else "CLOSED"
-                cv2.putText(frame, f"Mouth {i}: {status} ({mar:.2f})", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        if self.latest_face_data:
+            if self.latest_face_data.face_boxes:
+                cv2.putText(
+                    frame,
+                    f"Faces: {len(self.latest_face_data.face_boxes)}",
+                    (10, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (255, 255, 0),
+                    1
+                )
                 y_offset += 20
+
+            if self.latest_face_data.mouth_states:
+                for i, (is_open, mar) in enumerate(zip(self.latest_face_data.mouth_states, self.latest_face_data.mouth_ratios)):
+                    status = "OPEN" if is_open else "CLOSED"
+                    cv2.putText(frame, f"Mouth {i}: {status} ({mar:.2f})", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                    y_offset += 20
+        else:
+            # Show that face detector is not sending data
+            cv2.putText(frame, "Face: NO DATA", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1)
+            y_offset += 20
 
         cv2.putText(frame, f"FPS: {self.fps:.1f}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
@@ -1001,15 +1052,19 @@ class UINode:
                 while not self.target_queue.empty():
                     msg = self.target_queue.get_nowait()
                     self.latest_targets[msg.source] = msg
+                    logger.debug(f"UI received target from {msg.source}: ({msg.x}, {msg.y})")
 
                 while not self.servo_state_queue.empty():
                     self.latest_servo_state = self.servo_state_queue.get_nowait()
 
                 while not self.pose_data_queue.empty():
                     self.latest_pose_data = self.pose_data_queue.get_nowait()
+                    logger.debug("UI received pose data")
 
                 while not self.face_data_queue.empty():
                     self.latest_face_data = self.face_data_queue.get_nowait()
+                    logger.debug(f"UI received face data: boxes={self.latest_face_data.face_boxes is not None}, "
+                               f"landmarks={self.latest_face_data.landmarks is not None}")
 
                 await asyncio.sleep(0.001)
             except asyncio.CancelledError:
@@ -1110,8 +1165,22 @@ class Launcher:
 
 async def main() -> None:
     """Launch with both pose and face detection."""
+    import sys
 
-    # OPTION 1: Both detectors (may need debugging)
+    print("=" * 60)
+    print("Dual Tracker: IMX500 Pose + Hailo Face Detection")
+    print("=" * 60)
+    print("Usage:")
+    print("  python __main__.py           # Normal mode")
+    print("  python __main__.py --debug   # Debug logging")
+    print("=" * 60)
+
+    # Enable debug logging if requested
+    if "--debug" in sys.argv:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logger.info("🐛 Debug logging enabled")
+
+    # OPTION 1: Both detectors
     config = LaunchConfig(
         enable_face_detection=True,
         pose_detector=PoseDetectorParams(
@@ -1134,6 +1203,14 @@ async def main() -> None:
             show_face=True,
         ),
     )
+
+    print("\nConfiguration:")
+    print(f"  Pose tracking: {config.pose_detector.target_keypoint.name}")
+    print(f"  Face detection: {'Enabled' if config.enable_face_detection else 'Disabled'}")
+    print(f"  Motor tracking: {config.motor.tracking_source}")
+    print(f"  Face inference rate: {config.face_detector.inference_rate} fps")
+    print("=" * 60)
+    print()
 
     # OPTION 2: Just pose tracking (if face detection has issues)
     # config = LaunchConfig(
