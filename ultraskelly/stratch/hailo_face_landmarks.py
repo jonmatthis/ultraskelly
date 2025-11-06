@@ -160,18 +160,23 @@ class HailoFaceLandmarkDetector:
     def _configure_models(self) -> None:
         """Configure Hailo models"""
         # Configure face detection
-        configure_params = ConfigureParams.create_from_hef(
-            hef=self.face_hef,
-            interface=HailoStreamInterface.PCIe
-        )
-        self.face_network_group = self.device.configure(self.face_hef, configure_params)[0]
+        self.face_network_group = self.device.configure(
+            self.face_hef,
+            ConfigureParams.create_from_hef(self.face_hef, interface=HailoStreamInterface.PCIe)
+        )[0]
 
         # Configure landmark detection
-        configure_params = ConfigureParams.create_from_hef(
-            hef=self.landmark_hef,
-            interface=HailoStreamInterface.PCIe
-        )
-        self.landmark_network_group = self.device.configure(self.landmark_hef, configure_params)[0]
+        self.landmark_network_group = self.device.configure(
+            self.landmark_hef,
+            ConfigureParams.create_from_hef(self.landmark_hef, interface=HailoStreamInterface.PCIe)
+        )[0]
+
+        # Get input/output stream info
+        self.face_input_vstreams_params = InputVStreamParams.make(self.face_network_group)
+        self.face_output_vstreams_params = OutputVStreamParams.make(self.face_network_group)
+
+        self.landmark_input_vstreams_params = InputVStreamParams.make(self.landmark_network_group)
+        self.landmark_output_vstreams_params = OutputVStreamParams.make(self.landmark_network_group)
 
     def detect_faces(self, image: np.ndarray) -> list[FaceBox]:
         """
@@ -192,14 +197,13 @@ class HailoFaceLandmarkDetector:
 
         # Run inference
         with InferVStreams(self.face_network_group,
-                           InputVStreamParams.make_from_network_group(self.face_network_group, quantized=False,
-                                                                      format_type=FormatType.FLOAT32),
-                           OutputVStreamParams.make_from_network_group(self.face_network_group, quantized=False,
-                                                                       format_type=FormatType.FLOAT32)) as infer_pipeline:
-            input_dict = {list(infer_pipeline.input_vstreams.keys())[0]: input_data}
+                           self.face_input_vstreams_params,
+                           self.face_output_vstreams_params) as infer_pipeline:
+            # Get input stream name
+            input_dict = {next(iter(infer_pipeline.input_vstreams)): input_data}
             output = infer_pipeline.infer(input_dict)
 
-        # Parse face detections (this depends on model output format)
+        # Parse face detections
         faces = self._parse_face_detections(output, image.shape)
         return faces
 
@@ -279,11 +283,10 @@ class HailoFaceLandmarkDetector:
 
         # Run inference
         with InferVStreams(self.landmark_network_group,
-                           InputVStreamParams.make_from_network_group(self.landmark_network_group, quantized=False,
-                                                                      format_type=FormatType.FLOAT32),
-                           OutputVStreamParams.make_from_network_group(self.landmark_network_group, quantized=False,
-                                                                       format_type=FormatType.FLOAT32)) as infer_pipeline:
-            input_dict = {list(infer_pipeline.input_vstreams.keys())[0]: input_data}
+                           self.landmark_input_vstreams_params,
+                           self.landmark_output_vstreams_params) as infer_pipeline:
+            # Get input stream name
+            input_dict = {next(iter(infer_pipeline.input_vstreams)): input_data}
             output = infer_pipeline.infer(input_dict)
 
         # Parse landmarks
@@ -461,8 +464,8 @@ class HailoFaceLandmarkDetector:
 
     def close(self) -> None:
         """Release resources"""
-        self.face_network_group.release()
-        self.landmark_network_group.release()
+        # Network groups are automatically managed by VDevice
+        # No explicit release needed
         print("Detector closed")
 
 
