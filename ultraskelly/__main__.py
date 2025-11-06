@@ -579,7 +579,7 @@ class HailoFaceDetectorNode:
                     logger.debug(f"Processing frame {frame_counter}")
 
                     # Detect faces
-                    face_boxes = self._detect_faces_sync(frame_msg.frame)
+                    face_boxes = self._detect_faces_simple(frame_msg.frame)
                     logger.debug(f"Detected {len(face_boxes)} faces")
 
                     if not face_boxes:
