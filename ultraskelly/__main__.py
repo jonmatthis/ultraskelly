@@ -180,7 +180,7 @@ class PoseDetectorParams(BaseModel):
         description="Path to IMX500 pose estimation model"
     )
     target_keypoint: CocoKeypoint = Field(
-        default=CocoKeypoint.RIGHT_WRIST,
+        default=CocoKeypoint.NOSE,
         description="Body part to track"
     )
     detection_threshold: float = Field(
