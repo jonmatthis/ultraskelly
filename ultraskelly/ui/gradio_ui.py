@@ -25,6 +25,7 @@ from ultraskelly.core.bot.sensory.pose_detection_node import (
     SKELETON_CONNECTIONS,
     PoseDataMessage,
 )
+from ultraskelly.core.pubsub.bot_topics import FrameTopic, PoseDataTopic, ServoStateTopic, TargetLocationTopic
 from ultraskelly.core.pubsub.pubsub_manager import PubSubTopicManager
 logger = logging.getLogger(__name__)
 
@@ -93,10 +94,10 @@ class GradioUINode(Node):
         node = cls(pubsub=pubsub, params=params)
         
         # Subscribe to topics
-        node.frame_queue = pubsub.frame.subscribe()
-        node.target_queue = pubsub.target_location.subscribe()
-        node.servo_state_queue = pubsub.servo_state.subscribe()
-        node.pose_data_queue = pubsub.pose_data.subscribe()
+        node.frame_queue = pubsub.topics[FrameTopic].get_subscription()
+        node.target_queue = pubsub.topics[TargetLocationTopic].get_subscription()
+        node.servo_state_queue = pubsub.topics[ServoStateTopic].get_subscription()
+        node.pose_data_queue = pubsub.topics[PoseDataTopic].get_subscription()
         
         # Initialize node metrics
         node._initialize_metrics()
