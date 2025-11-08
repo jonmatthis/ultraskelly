@@ -4,7 +4,7 @@ from adafruit_motorkit import MotorKit
 from gpiozero import RotaryEncoder
 
 # Initialize DC+Stepper HAT at address 0x60 with higher PWM for quieter operation
-kit: MotorKit = MotorKit(address=0x60, pwm_frequency=20000)
+kit: MotorKit = MotorKit(address=0x60, pwm_frequency=1600)
 
 # Initialize encoder (green=GPIO16, white=GPIO12)
 encoder: RotaryEncoder = RotaryEncoder(a=16, b=12, max_steps=1000000)
