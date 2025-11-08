@@ -5,7 +5,6 @@ ROS2-inspired architecture: independent nodes + parameter system + launch config
 Now includes IMX500-based human pose tracking.
 """
 import logging
-logger = logging.getLogger(__name__)
 from ultraskelly.core.bot.base_abcs import DetectorType
 from ultraskelly.bot_launcher import LaunchConfig, BotLauncher
 from ultraskelly.core.bot.motor.head_node import MotorNodeParams
