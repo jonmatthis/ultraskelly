@@ -6,13 +6,13 @@ Detects people and moves servos to center the first detected person in frame.
 
 import time
 from typing import Any
-import numpy as np
-import cv2
 
+import cv2
+import numpy as np
+from adafruit_servokit import ServoKit
 from picamera2 import Picamera2, MappedArray
 from picamera2.devices import IMX500
 from picamera2.devices.imx500 import NetworkIntrinsics
-from adafruit_servokit import ServoKit
 
 
 class Detection:

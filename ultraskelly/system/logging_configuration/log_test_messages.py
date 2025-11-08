@@ -1,5 +1,5 @@
 import logging
-
+logger = logging.getLogger(__name__)
 
 def log_test_messages(logger: logging.Logger):
     logger.loop("This is a LOOP message, value `4` ->  For logs that are printed in a loop")

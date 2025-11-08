@@ -5,10 +5,11 @@ Auto-calibrates servo directions by observing frame movement.
 """
 
 import time
-import numpy as np
+
 import cv2
-from picamera2 import Picamera2
+import numpy as np
 from adafruit_servokit import ServoKit
+from picamera2 import Picamera2
 
 
 class ServoController:

@@ -5,7 +5,7 @@ from threading import Event
 from typing import Protocol, runtime_checkable
 
 import numpy as np
-from pydantic import BaseModel, SkipValidation
+from pydantic import BaseModel, SkipValidation, Field, ConfigDict
 
 from ultraskelly.core.pubsub.pubsub_manager import PubSubTopicManager
 
@@ -23,10 +23,11 @@ class NodeParams(BaseModel):
 
 class Node(BaseModel,ABC):
     """Abstract base class for all nodes."""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     pubsub: PubSubTopicManager
     params: NodeParams
-    stop_event = SkipValidation[Event()]
+    stop_event: SkipValidation[Event] = Field(default_factory=Event, exclude=True)
 
     @abstractmethod
     def run(self) -> None:

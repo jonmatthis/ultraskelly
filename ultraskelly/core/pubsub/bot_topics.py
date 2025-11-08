@@ -1,5 +1,5 @@
 import numpy as np
-from pydantic import Field, ConfigDict
+from pydantic import ConfigDict
 
 from ultraskelly.core.pubsub.pubsub_abcs import TopicMessageABC, create_topic
 

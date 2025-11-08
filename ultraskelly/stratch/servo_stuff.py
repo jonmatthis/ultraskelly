@@ -1,7 +1,9 @@
 
 
 import time
+
 from adafruit_servokit import ServoKit
+
 time.sleep(5)
 kit= ServoKit(channels=16)
 kit.servo[3].angle =180

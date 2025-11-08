@@ -1,9 +1,11 @@
 import logging
+import multiprocessing
 from typing import TypeVar, Generic, Callable, ClassVar
 
-from pydantic import BaseModel, Field, ConfigDict, create_model
+from pydantic import BaseModel, Field, ConfigDict, create_model, SkipValidation
 
-from ultraskelly.core.types.type_overloads import TopicPublicationQueue, TopicSubscriptionQueue
+TopicPublicationQueue= SkipValidation[multiprocessing.Queue]
+TopicSubscriptionQueue= SkipValidation[multiprocessing.Queue]
 
 logger = logging.getLogger(__name__)
 

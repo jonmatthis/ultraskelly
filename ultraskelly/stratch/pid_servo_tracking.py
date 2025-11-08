@@ -16,11 +16,11 @@ Think of it like driving a car:
 - D: "I'm turning too fast, slow down the steering!"
 """
 import logging
-import time
-from typing import Protocol
+logger = logging.getLogger(__name__)
+import  time
 import numpy as np
 import cv2
-from pydantic import BaseModel, Field, ConfigDict, model_validator
+from pydantic import BaseModel, Field, ConfigDict
 from adafruit_pca9685 import PCA9685
 from board import SCL, SDA
 import busio

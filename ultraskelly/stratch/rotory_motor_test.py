@@ -1,6 +1,7 @@
+from time import sleep
+
 from adafruit_motorkit import MotorKit
 from gpiozero import RotaryEncoder
-from time import sleep
 
 # Initialize DC+Stepper HAT at address 0x60 with higher PWM for quieter operation
 kit: MotorKit = MotorKit(address=0x60, pwm_frequency=20000)

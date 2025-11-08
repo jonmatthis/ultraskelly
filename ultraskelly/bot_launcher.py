@@ -1,8 +1,9 @@
+import logging
 from threading import Thread
 
-from pydantic import BaseModel, Field, SkipValidation
+from pydantic import BaseModel, Field, SkipValidation, ConfigDict
 
-from ultraskelly.core.bot.__main__bot import logger
+logger = logging.getLogger(__name__)
 from ultraskelly.core.bot.base_abcs import DetectorType, Node, NodeParams
 from ultraskelly.core.bot.motor.head_node import MotorNode, MotorNodeParams
 from ultraskelly.core.bot.sensory.bright_point_detection_node import (
@@ -14,7 +15,7 @@ from ultraskelly.core.bot.sensory.pose_detection_node import (
     PoseDetectorNode,
     PoseDetectorParams,
 )
-from ultraskelly.core.bot.ui import UINode, UINodeParams
+from ultraskelly.ui.gradio_ui import UINode, UINodeParams
 from ultraskelly.core.pubsub.pubsub_manager import (
     PubSubTopicManager,
     get_or_create_pipeline_pubsub_manager,
@@ -36,16 +37,16 @@ class LaunchConfig(NodeParams):
     ui: UINodeParams = Field(default_factory=UINodeParams)
 
 
-class Launcher(BaseModel):
+class BotLauncher(BaseModel):
     """Main launcher for the bot system."""
-
+    model_config = ConfigDict(arbitrary_types_allowed=True)
     config: LaunchConfig
     pubsub: SkipValidation[PubSubTopicManager]
     nodes: list[Node] = Field(default_factory=list)
     workers: list[Thread] = Field(default_factory=list, exclude=True)
 
     @classmethod
-    def from_config(cls, *, config: LaunchConfig) -> "Launcher":
+    def from_config(cls, config: LaunchConfig) -> "BotLauncher":
         """Instantiate nodes based on config."""
         logger.info("Creating nodes from launch config...")
 

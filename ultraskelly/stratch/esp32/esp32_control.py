@@ -79,10 +79,10 @@ Notes:
 - IDE may show warnings about MicroPython-specific functions - ignore them, code will run fine on ESP32
 """
 
-from machine import Pin, DAC, reset
 import math
 import time
-import sys
+
+from machine import Pin, DAC, reset
 
 # Force reset of GPIO25 to clear any previous DAC state
 try:

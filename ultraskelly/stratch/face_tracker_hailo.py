@@ -3,7 +3,8 @@ Face Detection 2-Axis Tracker using Hailo AI Accelerator
 Properly handles SCRFD model output format
 """
 import logging
-import time
+logger = logging.getLogger(__name__)
+import  time
 from typing import Optional
 import numpy as np
 import cv2

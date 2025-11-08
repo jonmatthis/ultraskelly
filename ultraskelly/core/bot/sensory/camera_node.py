@@ -1,13 +1,19 @@
+import logging
 import time
 
-from picamera2 import Picamera2
 from pydantic import Field, SkipValidation
 
-from ultraskelly.core.bot.__main__bot import logger
+logger = logging.getLogger(__name__)
+
 from ultraskelly.core.bot.base_abcs import  Node, NodeParams
 from ultraskelly.core.pubsub.bot_topics import FrameMessage
 from ultraskelly.core.pubsub.pubsub_manager import PubSubTopicManager
 
+try:
+    from picamera2 import Picamera2
+except ImportError:
+    logger.error("Picamera2 library not found - vision node will not work.")
+    Picamera2 = None  # type: ignore
 
 class VisionNodeParams(NodeParams):
     """Parameters for VisionNode."""

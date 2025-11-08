@@ -1,18 +1,32 @@
+import logging
 import time
 from dataclasses import dataclass
 from enum import IntEnum
 
 import numpy as np
-from picamera2 import CompletedRequest, Picamera2
-from picamera2.devices.imx500 import IMX500, NetworkIntrinsics
-from picamera2.devices.imx500.postprocess_highernet import postprocess_higherhrnet
+
 from pydantic import Field, SkipValidation
 
-from ultraskelly.core.bot.__main__bot import logger
-from ultraskelly.core.bot.base_abcs import DetectorNode, Message, NodeParams
+from ultraskelly.core.pubsub.bot_topics import PoseDataMessage
+from ultraskelly.core.pubsub.pubsub_manager import PubSubTopicManager
+
+logger = logging.getLogger(__name__)
+
+from ultraskelly.core.bot.base_abcs import DetectorNode, NodeParams
 from ultraskelly.core.bot.motor.head_node import TargetLocationMessage
 from ultraskelly.core.bot.sensory.camera_node import FrameMessage
-from ultraskelly.core.pubsub import PubSub
+
+try:
+    from picamera2 import CompletedRequest, Picamera2
+    from picamera2.devices.imx500 import IMX500, NetworkIntrinsics
+    from picamera2.devices.imx500.postprocess_highernet import postprocess_higherhrnet
+except ImportError:
+    logger.error("Picamera2 library not found - vision node will not work.")
+    Picamera2 = None  # type: ignore
+    CompletedRequest = None  # type: ignore
+    IMX500 = None  # type: ignore
+    NetworkIntrinsics = None  # type: ignore
+    postprocess_higherhrnet = None  # type: ignore
 
 
 class CocoKeypoint(IntEnum):
@@ -63,13 +77,7 @@ SKELETON_CONNECTIONS: list[tuple[CocoKeypoint, CocoKeypoint]] = [
 ]
 
 
-@dataclass(frozen=True)
-class PoseDataMessage(Message):
-    """Full pose detection data for visualization."""
 
-    keypoints: np.ndarray | None  # Shape: (num_people, 17, 3) where 3 = [x, y, confidence]
-    scores: np.ndarray | None  # Shape: (num_people,)
-    boxes: list[np.ndarray] | None
 
 
 class PoseDetectorParams(NodeParams):
@@ -103,12 +111,12 @@ class PoseDetectorNode(DetectorNode):
     picam2: SkipValidation[Picamera2] = Field(default=None, exclude=True)
 
     # Latest detection results (shared between callback and thread)
-    _latest_keypoints: np.ndarray | None = Field(default=None, exclude=True)
-    _latest_scores: np.ndarray | None = Field(default=None, exclude=True)
-    _latest_boxes: list[np.ndarray] | None = Field(default=None, exclude=True)
+    latest_keypoints: np.ndarray | None = Field(default=None, exclude=True)
+    latest_scores: np.ndarray | None = Field(default=None, exclude=True)
+    latest_boxes: list[np.ndarray] | None = Field(default=None, exclude=True)
 
     @classmethod
-    def create(cls, *, pubsub: PubSub, params: PoseDetectorParams) -> "PoseDetectorNode":
+    def create(cls, *, pubsub: PubSubTopicManager, params: PoseDetectorParams) -> "PoseDetectorNode":
         """Factory method to create and initialize PoseDetectorNode."""
         node = cls(pubsub=pubsub, params=params)
 
@@ -155,15 +163,15 @@ class PoseDetectorNode(DetectorNode):
         # Store results (thread-safe update)
         if scores is not None and len(scores) > 0:
             # Reshape keypoints to (num_people, 17, 3) where 3 = [x, y, confidence]
-            self._latest_keypoints = np.reshape(
+            self.latest_keypoints = np.reshape(
                 np.stack(keypoints, axis=0), (len(scores), 17, 3)
             )
-            self._latest_boxes = [np.array(b) for b in boxes]
-            self._latest_scores = np.array(scores)
+            self.latest_boxes = [np.array(b) for b in boxes]
+            self.latest_scores = np.array(scores)
         else:
-            self._latest_keypoints = None
-            self._latest_scores = None
-            self._latest_boxes = None
+            self.latest_keypoints = None
+            self.latest_scores = None
+            self.latest_boxes = None
 
     def _calculate_body_angle(self, *, keypoints: np.ndarray) -> float | None:
         """Calculate body orientation from shoulder line."""
@@ -194,12 +202,12 @@ class PoseDetectorNode(DetectorNode):
 
     def detect(self, image: np.ndarray) -> tuple[int | None, int | None, float | None]:
         """Extract target keypoint from latest detection results."""
-        if self._latest_keypoints is None or self._latest_scores is None:
+        if self.latest_keypoints is None or self.latest_scores is None:
             return (None, None, None)
 
         # Find person with highest score
-        best_person_idx = int(np.argmax(self._latest_scores))
-        keypoints = self._latest_keypoints[best_person_idx]
+        best_person_idx = int(np.argmax(self.latest_scores))
+        keypoints = self.latest_keypoints[best_person_idx]
 
         # Get target keypoint (enum value IS the index)
         target_kp = keypoints[self.params.target_keypoint]
@@ -241,9 +249,9 @@ class PoseDetectorNode(DetectorNode):
                 # Publish full pose data for visualization
                 self.pubsub.pose_data.publish(
                     PoseDataMessage(
-                        keypoints=self._latest_keypoints,
-                        scores=self._latest_scores,
-                        boxes=self._latest_boxes,
+                        keypoints=self.latest_keypoints,
+                        scores=self.latest_scores,
+                        boxes=self.latest_boxes,
                     )
                 )
 

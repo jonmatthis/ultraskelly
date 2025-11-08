@@ -1,5 +1,5 @@
 import logging
-
+logger = logging.getLogger(__name__)
 from .custom_formatter import CustomFormatter
 from ..log_format_string import LOG_POINTER_STRING
 from ..logging_color_helpers import get_hashed_color

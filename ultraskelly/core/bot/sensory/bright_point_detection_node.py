@@ -1,16 +1,25 @@
+import logging
 import queue
 import time
 
-import cv2
+
 import numpy as np
 from pydantic import Field, SkipValidation, field_validator
 
-from ultraskelly.core.bot.__main__bot import logger
+logger = logging.getLogger(__name__)
+
 from ultraskelly.core.bot.base_abcs import DetectorNode, NodeParams
 from ultraskelly.core.bot.motor.head_node import TargetLocationMessage
 from ultraskelly.core.bot.sensory.camera_node import FrameMessage
 from ultraskelly.core.pubsub.pubsub_manager import PubSubTopicManager
 
+try:
+    import cv2
+except ImportError as e:
+    logger.error(
+        "Cv2 not loaded - BrightnessDetectorNode will not work. "
+    )
+    cv2 = None  # type: ignore
 
 class BrightnessDetectorParams(NodeParams):
     """Parameters for BrightnessDetectorNode."""

@@ -1,3 +1,4 @@
+import logging
 import queue
 import time
 from threading import Thread
@@ -6,7 +7,7 @@ import cv2
 import numpy as np
 from pydantic import Field, SkipValidation
 
-from ultraskelly.core.bot.__main__bot import logger
+logger = logging.getLogger(__name__)
 from ultraskelly.core.bot.base_abcs import Node, NodeParams
 from ultraskelly.core.bot.motor.head_node import ServoStateMessage, TargetLocationMessage
 from ultraskelly.core.bot.sensory.camera_node import FrameMessage

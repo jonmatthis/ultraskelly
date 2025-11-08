@@ -4,12 +4,12 @@
 # ============================================================================
 
 import logging
+logger = logging.getLogger(__name__)
 from multiprocessing import parent_process
 
 from pydantic import BaseModel, Field, ConfigDict
 
-from ultraskelly.core.pubsub.pubsub_abcs import PubSubTopicABC, MessageType
-from ultraskelly.core.types.type_overloads import TopicSubscriptionQueue, PipelineIdString
+from ultraskelly.core.pubsub.pubsub_abcs import PubSubTopicABC, MessageType, TopicSubscriptionQueue
 
 logger = logging.getLogger(__name__)
 

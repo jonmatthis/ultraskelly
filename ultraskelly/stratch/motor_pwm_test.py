@@ -1,5 +1,6 @@
-from adafruit_motorkit import MotorKit
 from time import sleep
+
+from adafruit_motorkit import MotorKit
 
 pwm_frequencies: list[int] = [1600, 5000, 10000, 15000, 20000, 25000]
 

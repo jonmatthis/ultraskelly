@@ -4,9 +4,10 @@ Simple Manual Servo Control with Camera Preview
 """
 
 import time
+
 import cv2
-from picamera2 import Picamera2
 from adafruit_servokit import ServoKit
+from picamera2 import Picamera2
 
 
 def main() -> None:

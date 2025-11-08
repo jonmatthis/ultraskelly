@@ -1,4 +1,5 @@
 import logging
+logger = logging.getLogger(__name__)
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
