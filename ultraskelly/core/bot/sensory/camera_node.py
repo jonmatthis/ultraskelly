@@ -8,7 +8,7 @@ from ultraskelly import FAIL_ON_IMPORTS
 logger = logging.getLogger(__name__)
 
 from ultraskelly.core.bot.base_abcs import  Node, NodeParams
-from ultraskelly.core.pubsub.bot_topics import FrameMessage
+from ultraskelly.core.pubsub.bot_topics import FrameMessage, FrameTopic
 from ultraskelly.core.pubsub.pubsub_manager import PubSubTopicManager
 
 try:
@@ -57,7 +57,7 @@ class VisionNode(Node):
         try:
             while not self.stop_event.is_set():
                 frame = self.picam2.capture_array()
-                self.pubsub.frame.publish(FrameMessage(frame=frame, timestamp=time.time()))
+                self.pubsub.topics[FrameTopic].publish(FrameMessage(frame=frame))
                 time.sleep(0.001)
         finally:
             self.picam2.stop()

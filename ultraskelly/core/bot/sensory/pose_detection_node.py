@@ -8,7 +8,7 @@ import numpy as np
 from pydantic import Field, SkipValidation
 
 from ultraskelly import FAIL_ON_IMPORTS
-from ultraskelly.core.pubsub.bot_topics import PoseDataMessage
+from ultraskelly.core.pubsub.bot_topics import PoseDataMessage, TargetLocationTopic, PoseDataTopic, FrameTopic
 from ultraskelly.core.pubsub.pubsub_manager import PubSubTopicManager
 
 logger = logging.getLogger(__name__)
@@ -25,11 +25,6 @@ except ImportError:
     if FAIL_ON_IMPORTS:
         raise
     logger.error("Picamera2 library not found - vision node will not work.")
-    Picamera2 = None  # type: ignore
-    CompletedRequest = None  # type: ignore
-    IMX500 = None  # type: ignore
-    NetworkIntrinsics = None  # type: ignore
-    postprocess_higherhrnet = None  # type: ignore
 
 
 class CocoKeypoint(IntEnum):
@@ -203,7 +198,7 @@ class PoseDetectorNode(DetectorNode):
 
         return float(angle)
 
-    def detect(self, image: np.ndarray) -> tuple[int | None, int | None, float | None]:
+    def detect(self) -> tuple[int | None, int | None, float | None]:
         """Extract target keypoint from latest detection results."""
         if self.latest_keypoints is None or self.latest_scores is None:
             return (None, None, None)
@@ -243,14 +238,14 @@ class PoseDetectorNode(DetectorNode):
         try:
             while not self.stop_event.is_set():
                 # Extract target from latest detection - using abstract detect method
-                x, y, angle = self.detect(None)  # Frame comes from callback
+                x, y, angle = self.detect()  # Frame comes from callback
 
-                self.pubsub.target_location.publish(
+                self.pubsub.topics[TargetLocationTopic].publish(
                     TargetLocationMessage(x=x, y=y, angle=angle)
                 )
 
                 # Publish full pose data for visualization
-                self.pubsub.pose_data.publish(
+                self.pubsub.topics[PoseDataTopic].publish(
                     PoseDataMessage(
                         keypoints=self.latest_keypoints,
                         scores=self.latest_scores,
@@ -260,7 +255,7 @@ class PoseDetectorNode(DetectorNode):
 
                 # Publish frames for UI
                 frame = self.picam2.capture_array()
-                self.pubsub.frame.publish(FrameMessage(frame=frame))
+                self.pubsub.topics[FrameTopic].publish(FrameMessage(frame=frame))
 
                 time.sleep(0.01)  # 100 Hz publishing rate
         finally:

@@ -2,7 +2,7 @@ import logging
 import time
 
 import numpy as np
-
+from adafruit_servokit import ServoKit
 
 from pydantic import Field, SkipValidation
 
@@ -14,16 +14,10 @@ from ultraskelly.core.pubsub.bot_topics import (
     TargetLocationMessage,
     TargetLocationTopic,
 )
+from ultraskelly.core.pubsub.pubsub_abcs import TopicSubscriptionQueue
 from ultraskelly.core.pubsub.pubsub_manager import PubSubTopicManager
 
 logger = logging.getLogger(__name__)
-try:
-    from adafruit_servokit import ServoKit
-except ImportError:
-    if FAIL_ON_IMPORTS:
-        raise
-    ServoKit = None  # type: ignore
-    logger.warning("Could not import adafruit_servokit. Servo control will not work.")
 
 class MotorNodeParams(NodeParams):
     """Parameters for MotorNode."""
@@ -59,7 +53,7 @@ class MotorNode(Node):
     tilt_angle: float = Field(default=90.0)
     roll_angle: float = Field(default=90.0)
     smoothed_target_roll: float | None = Field(default=None)
-    target_subscription: SkipValidation[object] = Field(default=None, exclude=True)
+    target_subscription: SkipValidation[TopicSubscriptionQueue] = Field(default=None, exclude=True)
 
     @classmethod
     def create(cls, *, pubsub: PubSubTopicManager, params: MotorNodeParams) -> "MotorNode":
