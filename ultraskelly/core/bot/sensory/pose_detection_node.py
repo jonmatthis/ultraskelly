@@ -7,6 +7,7 @@ import numpy as np
 
 from pydantic import Field, SkipValidation
 
+from ultraskelly import FAIL_ON_IMPORTS
 from ultraskelly.core.pubsub.bot_topics import PoseDataMessage
 from ultraskelly.core.pubsub.pubsub_manager import PubSubTopicManager
 
@@ -21,6 +22,8 @@ try:
     from picamera2.devices.imx500 import IMX500, NetworkIntrinsics
     from picamera2.devices.imx500.postprocess_highernet import postprocess_higherhrnet
 except ImportError:
+    if FAIL_ON_IMPORTS:
+        raise
     logger.error("Picamera2 library not found - vision node will not work.")
     Picamera2 = None  # type: ignore
     CompletedRequest = None  # type: ignore

@@ -6,6 +6,8 @@ import time
 import numpy as np
 from pydantic import Field, SkipValidation, field_validator
 
+from ultraskelly import FAIL_ON_IMPORTS
+
 logger = logging.getLogger(__name__)
 
 from ultraskelly.core.bot.base_abcs import DetectorNode, NodeParams
@@ -16,6 +18,8 @@ from ultraskelly.core.pubsub.pubsub_manager import PubSubTopicManager
 try:
     import cv2
 except ImportError as e:
+    if FAIL_ON_IMPORTS:
+        raise
     logger.error(
         "Cv2 not loaded - BrightnessDetectorNode will not work. "
     )

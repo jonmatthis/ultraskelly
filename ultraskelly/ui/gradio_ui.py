@@ -27,11 +27,14 @@ from ultraskelly.core.bot.sensory.pose_detection_node import (
 )
 from ultraskelly.core.pubsub.bot_topics import FrameTopic, PoseDataTopic, ServoStateTopic, TargetLocationTopic
 from ultraskelly.core.pubsub.pubsub_manager import PubSubTopicManager
+from ultraskelly import  FAIL_ON_IMPORTS
 logger = logging.getLogger(__name__)
 
 try:
     import cv2
 except ImportError as e:
+    if FAIL_ON_IMPORTS:
+        raise
     logger.error(
         "Cv2 not loaded - GradioUINode will not function properly. "
     )

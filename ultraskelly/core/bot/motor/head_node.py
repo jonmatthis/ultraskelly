@@ -6,7 +6,7 @@ import numpy as np
 
 from pydantic import Field, SkipValidation
 
-
+from ultraskelly import FAIL_ON_IMPORTS
 from ultraskelly.core.bot.base_abcs import Node, NodeParams
 from ultraskelly.core.pubsub.bot_topics import (
     ServoStateMessage,
@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 try:
     from adafruit_servokit import ServoKit
 except ImportError:
+    if FAIL_ON_IMPORTS:
+        raise
     ServoKit = None  # type: ignore
     logger.warning("Could not import adafruit_servokit. Servo control will not work.")
 
