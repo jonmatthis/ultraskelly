@@ -60,10 +60,10 @@ class GradioUINode(Node):
     params: UINodeParams
     
     # Queue subscriptions
-    frame_queue: SkipValidation[queue.Queue] = Field(default=None, exclude=True)
-    target_queue: SkipValidation[queue.Queue] = Field(default=None, exclude=True)
-    servo_state_queue: SkipValidation[queue.Queue] = Field(default=None, exclude=True)
-    pose_data_queue: SkipValidation[queue.Queue] = Field(default=None, exclude=True)
+    frame_subscription: SkipValidation[queue.Queue] = Field(default=None, exclude=True)
+    target_subscription: SkipValidation[queue.Queue] = Field(default=None, exclude=True)
+    servo_state_subscription: SkipValidation[queue.Queue] = Field(default=None, exclude=True)
+    pose_data_subscription: SkipValidation[queue.Queue] = Field(default=None, exclude=True)
     
     # Latest state
     latest_frame: np.ndarray | None = Field(default=None, exclude=True)
@@ -88,10 +88,10 @@ class GradioUINode(Node):
         node = cls(pubsub=pubsub, params=params)
         
         # Subscribe to topics
-        node.frame_queue = pubsub.topics[FrameTopic].get_subscription()
-        node.target_queue = pubsub.topics[TargetLocationTopic].get_subscription()
-        node.servo_state_queue = pubsub.topics[ServoStateTopic].get_subscription()
-        node.pose_data_queue = pubsub.topics[PoseDataTopic].get_subscription()
+        node.frame_subscription = pubsub.topics[FrameTopic].get_subscription()
+        node.target_subscription = pubsub.topics[TargetLocationTopic].get_subscription()
+        node.servo_state_subscription = pubsub.topics[ServoStateTopic].get_subscription()
+        node.pose_data_subscription = pubsub.topics[PoseDataTopic].get_subscription()
         
         # Initialize node metrics
         node._initialize_metrics()
@@ -368,10 +368,10 @@ class GradioUINode(Node):
                 # Drain queues to get latest values
                 while True:
                     try:
-                        frame_msg: FrameMessage = self.frame_queue.get_nowait()
+                        frame_msg: FrameMessage = self.frame_subscription.get_nowait()
                         self.latest_frame = frame_msg.frame
                         self.frame_count += 1
-                        
+
                         # Update FPS
                         current_time = time.time()
                         if current_time - self.last_fps_time >= 1.0:
@@ -383,19 +383,19 @@ class GradioUINode(Node):
                 
                 while True:
                     try:
-                        self.latest_target = self.target_queue.get_nowait()
+                        self.latest_target = self.target_subscription.get_nowait()
                     except queue.Empty:
                         break
                 
                 while True:
                     try:
-                        self.latest_servo_state = self.servo_state_queue.get_nowait()
+                        self.latest_servo_state = self.servo_state_subscription.get_nowait()
                     except queue.Empty:
                         break
                 
                 while True:
                     try:
-                        self.latest_pose_data = self.pose_data_queue.get_nowait()
+                        self.latest_pose_data = self.pose_data_subscription.get_nowait()
                     except queue.Empty:
                         break
                 
@@ -487,7 +487,6 @@ class GradioUINode(Node):
                         metrics_table = gr.DataFrame(
                             label="Node Metrics",
                             value=self._get_metrics_dataframe(),
-                            height=300,
                         )
                 
                 # Performance Tab
