@@ -1,5 +1,6 @@
 import logging
-import sys
+logger = logging.getLogger(__name__)
+import  sys
 
 from ..filters.delta_time import DeltaTimeFilter
 from ..formatters.color_formatter import ColorFormatter

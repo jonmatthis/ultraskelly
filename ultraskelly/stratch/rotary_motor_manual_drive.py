@@ -1,5 +1,6 @@
-from gpiozero import RotaryEncoder
 from time import sleep
+
+from gpiozero import RotaryEncoder
 
 print("Encoder Test - Manually turn the motor shaft")
 print("=" * 50)

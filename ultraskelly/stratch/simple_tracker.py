@@ -3,7 +3,8 @@ Dead Simple 2-Axis Brightness Tracker
 Pan + Tilt - tracks bright point in X and Y
 """
 import logging
-import time
+logger = logging.getLogger(__name__)
+import  time
 import numpy as np
 import cv2
 from adafruit_servokit import ServoKit

@@ -1,10 +1,8 @@
 import logging
-import os
-from datetime import datetime
+logger = logging.getLogger(__name__)
+
 from pathlib import Path
 
-import httpx
-from dotenv import load_dotenv
 from fastapi import HTTPException, APIRouter
 from pydantic import BaseModel
 

@@ -1,5 +1,6 @@
 import logging
-import multiprocessing
+logger = logging.getLogger(__name__)
+import  multiprocessing
 from typing import Optional
 
 from ultraskelly.system.logging_configuration.handlers.websocket_log_queue_handler import create_websocket_log_queue

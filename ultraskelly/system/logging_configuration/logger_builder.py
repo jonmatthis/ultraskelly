@@ -1,4 +1,5 @@
 import logging
+logger = logging.getLogger(__name__)
 from logging.config import dictConfig
 from multiprocessing import Queue
 from typing import Optional

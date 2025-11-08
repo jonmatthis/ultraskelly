@@ -1,6 +1,7 @@
-from gpiozero import DigitalInputDevice
 from time import sleep
+
 from adafruit_motorkit import MotorKit
+from gpiozero import DigitalInputDevice
 
 # Connect green to GPIO 16, white to GPIO 12 (like you have now)
 print("Test: Are encoder signals already present?")

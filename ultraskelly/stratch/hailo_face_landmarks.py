@@ -19,11 +19,13 @@ Note: Models are downloaded to ~/.cache/hailo-models/
       First run will download ~50MB of models
 """
 
+import os
+import urllib.request
+from pathlib import Path
+from typing import NamedTuple
+
 import cv2
 import numpy as np
-import urllib.request
-import os
-from pathlib import Path
 from hailo_platform import (
     HEF,
     VDevice,
@@ -34,7 +36,6 @@ from hailo_platform import (
     OutputVStreamParams,
     FormatType
 )
-from typing import NamedTuple
 
 
 class FaceBox(NamedTuple):

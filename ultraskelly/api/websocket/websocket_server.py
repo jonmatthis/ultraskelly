@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI
 from starlette.websockets import WebSocket, WebSocketState, WebSocketDisconnect

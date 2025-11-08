@@ -2,7 +2,9 @@
 Clean shutdown endpoint with proper async handling.
 """
 import logging
-import os
+logger = logging.getLogger(__name__)
+
+import  os
 import signal
 
 from fastapi import APIRouter, Request

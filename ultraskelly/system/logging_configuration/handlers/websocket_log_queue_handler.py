@@ -1,5 +1,6 @@
 import logging
-import multiprocessing
+logger = logging.getLogger(__name__)
+import  multiprocessing
 from logging.handlers import QueueHandler
 from multiprocessing import Queue
 from typing import Optional

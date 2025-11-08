@@ -6,9 +6,9 @@ Continuously captures frames, detects objects, and shows them in a preview windo
 
 import time
 from typing import Any
-import numpy as np
-import cv2
 
+import cv2
+import numpy as np
 from picamera2 import Picamera2, MappedArray
 from picamera2.devices import IMX500
 from picamera2.devices.imx500 import NetworkIntrinsics
