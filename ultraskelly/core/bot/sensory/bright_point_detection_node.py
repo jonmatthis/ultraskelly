@@ -1,32 +1,50 @@
+import queue
 import time
 
+import cv2
 import numpy as np
-from pydantic import BaseModel, Field
+from pydantic import Field, SkipValidation, field_validator
 
 from ultraskelly.core.bot.__main__bot import logger
-from ultraskelly.core.bot.sensory.camera_node import FrameMessage
+from ultraskelly.core.bot.base_abcs import DetectorNode, NodeParams
 from ultraskelly.core.bot.motor.head_node import TargetLocationMessage
-from ultraskelly.core.bot.pubsub import PubSub
+from ultraskelly.core.bot.sensory.camera_node import FrameMessage
+from ultraskelly.core.pubsub.pubsub_manager import PubSubTopicManager
 
 
-class BrightnessDetectorParams(BaseModel):
+class BrightnessDetectorParams(NodeParams):
     """Parameters for BrightnessDetectorNode."""
+
     blur_size: int = Field(default=15, ge=1, description="Must be odd")
     threshold: int = Field(default=100, ge=0, le=255)
 
+    @field_validator("blur_size")
+    @classmethod
+    def validate_blur_size(cls, v: int) -> int:
+        """Ensure blur size is odd."""
+        if v % 2 == 0:
+            raise ValueError("blur_size must be odd")
+        return v
 
-class BrightnessDetectorNode:
+
+class BrightnessDetectorNode(DetectorNode):
     """Detects brightest point in frame with orientation."""
 
-    def __init__(self, pubsub: PubSub, params: BrightnessDetectorParams) -> None:
-        self.pubsub = pubsub
-        self.params = params
-        self._running = False
-        self.frame_queue = pubsub.frame.subscribe()
+    params: BrightnessDetectorParams
+    frame_queue: SkipValidation[object] = Field(default=None, exclude=True)
 
-    def _detect_target(self, frame: np.ndarray) -> tuple[int, int, float] | None:
+    @classmethod
+    def create(
+        cls, *, pubsub: PubSubTopicManager, params: BrightnessDetectorParams
+    ) -> "BrightnessDetectorNode":
+        """Factory method to create and initialize BrightnessDetectorNode."""
+        node = cls(pubsub=pubsub, params=params)
+        node.frame_queue = pubsub.frame.subscribe()
+        return node
+
+    def detect(self, image: np.ndarray) -> tuple[int | None, int | None, float | None]:
         """Find brightest point and its orientation in frame."""
-        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         blurred = cv2.GaussianBlur(gray, (self.params.blur_size, self.params.blur_size), 0)
 
         # Threshold to get bright region
@@ -36,7 +54,7 @@ class BrightnessDetectorNode:
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         if not contours:
-            return None
+            return (None, None, None)
 
         # Get largest contour
         largest_contour = max(contours, key=cv2.contourArea)
@@ -46,7 +64,7 @@ class BrightnessDetectorNode:
             # Fall back to centroid only
             M = cv2.moments(largest_contour)
             if M["m00"] == 0:
-                return None
+                return (None, None, None)
             cx = int(M["m10"] / M["m00"])
             cy = int(M["m01"] / M["m00"])
             return (cx, cy, 0.0)  # No rotation if we can't determine it
@@ -67,27 +85,23 @@ class BrightnessDetectorNode:
 
         return (int(center[0]), int(center[1]), rotation_angle)
 
-    async def run(self) -> None:
+    def run(self) -> None:
         """Main detection loop."""
         logger.info(
-            f"Starting BrightnessDetectorNode [blur={self.params.blur_size}, threshold={self.params.threshold}]")
-        self._running = True
+            f"Starting BrightnessDetectorNode [blur={self.params.blur_size}, "
+            f"threshold={self.params.threshold}]"
+        )
 
         try:
-            while self._running:
-                frame_msg: FrameMessage = await self.frame_queue.get()
-                result = self._detect_target(frame_msg.frame)
+            while not self.stop_event.is_set():
+                try:
+                    frame_msg: FrameMessage = self.frame_queue.get(timeout=0.1)
+                    x, y, angle = self.detect(frame_msg.frame)
 
-                if result:
-                    x, y, angle = result
-                else:
-                    x, y, angle = None, None, None
-
-                await self.pubsub.target_location.publish(
-                    TargetLocationMessage(x=x, y=y, angle=angle, timestamp=time.time())
-                )
+                    self.pubsub.target_location.publish(
+                        TargetLocationMessage(x=x, y=y, angle=angle, timestamp=time.time())
+                    )
+                except queue.Empty:
+                    continue
         finally:
             logger.info("BrightnessDetectorNode stopped")
-
-    async def stop(self) -> None:
-        self._running = False

@@ -89,24 +89,17 @@ class PubSubTopicManager(BaseModel):
         logger.debug("PubSubTopicManager closed.")
 
 
-# ============================================================================
-# Global pipeline manager registry
-# ============================================================================
-
-PIPELINE_PUB_SUB_MANAGERS: dict[PipelineIdString, PubSubTopicManager] = {}
+PIPELINE_PUB_SUB_MANAGER: PubSubTopicManager | None = None
 
 
-def create_pipeline_pubsub_manager(pipeline_id: PipelineIdString) -> PubSubTopicManager:
+def get_or_create_pipeline_pubsub_manager() -> PubSubTopicManager:
     """Create/replace manager for a pipeline. Must be called from main process."""
-    global PIPELINE_PUB_SUB_MANAGERS
+    global PIPELINE_PUB_SUB_MANAGER
 
     if parent_process() is not None:
         raise RuntimeError("PubSubManager can only be created in the main process.")
 
-    if PIPELINE_PUB_SUB_MANAGERS.get(pipeline_id) is not None:
-        logger.debug(f"Closing existing PubSubManager for pipeline {pipeline_id}")
-        PIPELINE_PUB_SUB_MANAGERS[pipeline_id].close()
+    if PIPELINE_PUB_SUB_MANAGER is None:
+        PIPELINE_PUB_SUB_MANAGER =  PubSubTopicManager.create()
 
-    logger.debug(f"Creating PubSubManager for pipeline {pipeline_id}")
-    PIPELINE_PUB_SUB_MANAGERS[pipeline_id] = PubSubTopicManager.create()
-    return PIPELINE_PUB_SUB_MANAGERS[pipeline_id]
+    return PIPELINE_PUB_SUB_MANAGER

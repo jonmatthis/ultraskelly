@@ -1,78 +1,108 @@
-import asyncio
-from typing import Literal
+from threading import Thread
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SkipValidation
 
 from ultraskelly.core.bot.__main__bot import logger
-from ultraskelly.core.bot.sensory.bright_point_detection_node import BrightnessDetectorParams, BrightnessDetectorNode
-from ultraskelly.core.bot.motor.head_node import MotorNodeParams, MotorNode
-from ultraskelly.core.bot.sensory.camera_node import VisionNodeParams, VisionNode
-from ultraskelly.core.bot.sensory.pose_detection_node import PoseDetectorParams, PoseDetectorNode
-from ultraskelly.core.bot.pubsub import PubSub
-from ultraskelly.core.bot.ui import UINodeParams, UINode
+from ultraskelly.core.bot.base_abcs import DetectorType, Node, NodeParams
+from ultraskelly.core.bot.motor.head_node import MotorNode, MotorNodeParams
+from ultraskelly.core.bot.sensory.bright_point_detection_node import (
+    BrightnessDetectorNode,
+    BrightnessDetectorParams,
+)
+from ultraskelly.core.bot.sensory.camera_node import VisionNode, VisionNodeParams
+from ultraskelly.core.bot.sensory.pose_detection_node import (
+    PoseDetectorNode,
+    PoseDetectorParams,
+)
+from ultraskelly.core.bot.ui import UINode, UINodeParams
+from ultraskelly.core.pubsub.pubsub_manager import (
+    PubSubTopicManager,
+    get_or_create_pipeline_pubsub_manager,
+)
 
 
-class LaunchConfig(BaseModel):
+class LaunchConfig(NodeParams):
     """Declarative launch configuration."""
 
-    detector_type: Literal["brightness", "pose"] = Field(
-        default="pose",
-        description="Which detector to use"
+    detector_type: DetectorType = Field(
+        default=DetectorType.POSE, description="Which detector to use"
     )
-
     vision: VisionNodeParams = Field(default_factory=VisionNodeParams)
-    brightness_detector: BrightnessDetectorParams = Field(default_factory=BrightnessDetectorParams)
+    brightness_detector: BrightnessDetectorParams = Field(
+        default_factory=BrightnessDetectorParams
+    )
     pose_detector: PoseDetectorParams = Field(default_factory=PoseDetectorParams)
     motor: MotorNodeParams = Field(default_factory=MotorNodeParams)
     ui: UINodeParams = Field(default_factory=UINodeParams)
 
 
-class Launcher:
-    """Launches nodes based on declarative config."""
+class Launcher(BaseModel):
+    """Main launcher for the bot system."""
 
-    def __init__(self, config: LaunchConfig) -> None:
-        self.config = config
-        self.pubsub = PubSub()
-        self.nodes: list[VisionNode | BrightnessDetectorNode | PoseDetectorNode | MotorNode | UINode] = []
+    config: LaunchConfig
+    pubsub: SkipValidation[PubSubTopicManager]
+    nodes: list[Node] = Field(default_factory=list)
+    workers: list[Thread] = Field(default_factory=list, exclude=True)
 
-    def _create_nodes(self) -> None:
+    @classmethod
+    def from_config(cls, *, config: LaunchConfig) -> "Launcher":
         """Instantiate nodes based on config."""
         logger.info("Creating nodes from launch config...")
 
-        # Always create motor and UI
-        self.nodes.append(MotorNode(self.pubsub, self.config.motor))
-        self.nodes.append(UINode(self.pubsub, self.config.ui))
+        launcher = cls(config=config, pubsub=get_or_create_pipeline_pubsub_manager())
+
+        # Create motor and UI nodes
+        launcher.nodes.append(MotorNode.create(pubsub=launcher.pubsub, params=config.motor))
+        launcher.nodes.append(UINode.create(pubsub=launcher.pubsub, params=config.ui))
 
         # Create detector based on type
-        if self.config.detector_type == "brightness":
-            self.nodes.append(VisionNode(self.pubsub, self.config.vision))
-            self.nodes.append(
-                BrightnessDetectorNode(self.pubsub, self.config.brightness_detector)
+        if config.detector_type == DetectorType.BRIGHTNESS:
+            launcher.nodes.append(
+                VisionNode.create(pubsub=launcher.pubsub, params=config.vision)
             )
-        elif self.config.detector_type == "pose":
-            self.nodes.append(
-                PoseDetectorNode(self.pubsub, self.config.pose_detector)
+            launcher.nodes.append(
+                BrightnessDetectorNode.create(
+                    pubsub=launcher.pubsub, params=config.brightness_detector
+                )
+            )
+        elif config.detector_type == DetectorType.POSE:
+            launcher.nodes.append(
+                PoseDetectorNode.create(pubsub=launcher.pubsub, params=config.pose_detector)
             )
         else:
-            raise ValueError(f"Unknown detector type: {self.config.detector_type}")
+            raise ValueError(f"Unknown detector type: {config.detector_type}")
 
-        logger.info(f"Created {len(self.nodes)} nodes")
+        logger.info(f"Created {len(launcher.nodes)} nodes")
+        return launcher
 
-    async def run(self) -> None:
+    def run(self) -> None:
         """Launch all nodes."""
-        self._create_nodes()
-
         logger.info("=" * 60)
-        logger.info("LAUNCHING ASYNC TARGET TRACKER")
+        logger.info("LAUNCHING TARGET TRACKER WITH SOPHISTICATED PUBSUB")
         logger.info("=" * 60)
 
         try:
-            # Run all nodes concurrently
-            await asyncio.gather(*[node.run() for node in self.nodes])
+            # Start all nodes in separate threads
+            for node in self.nodes:
+                thread = Thread(target=node.run)
+                thread.start()
+                self.workers.append(thread)
+
+            # Wait for all threads
+            for thread in self.workers:
+                thread.join()
+
         except KeyboardInterrupt:
             logger.info("\nStopping...")
         finally:
             # Stop all nodes
             for node in self.nodes:
-                await node.stop()
-            logger.info("All nodes stopped")
+                node.stop()
+
+            # Wait for threads
+            for thread in self.workers:
+                thread.join(timeout=2.0)
+
+            # Clean up pubsub
+            self.pubsub.close()
+            logger.info("All nodes stopped and pubsub closed")

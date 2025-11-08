@@ -1,19 +1,23 @@
-import asyncio
 import time
 from dataclasses import dataclass
 from enum import IntEnum
 
 import numpy as np
-from pydantic import BaseModel, Field
+from picamera2 import CompletedRequest, Picamera2
+from picamera2.devices.imx500 import IMX500, NetworkIntrinsics
+from picamera2.devices.imx500.postprocess_highernet import postprocess_higherhrnet
+from pydantic import Field, SkipValidation
 
 from ultraskelly.core.bot.__main__bot import logger
-from ultraskelly.core.bot.sensory.camera_node import FrameMessage
+from ultraskelly.core.bot.base_abcs import DetectorNode, Message, NodeParams
 from ultraskelly.core.bot.motor.head_node import TargetLocationMessage
-from ultraskelly.core.bot.pubsub import PubSub
+from ultraskelly.core.bot.sensory.camera_node import FrameMessage
+from ultraskelly.core.pubsub import PubSub
 
 
 class CocoKeypoint(IntEnum):
     """COCO pose estimation keypoint indices."""
+
     NOSE = 0
     LEFT_EYE = 1
     RIGHT_EYE = 2
@@ -60,63 +64,57 @@ SKELETON_CONNECTIONS: list[tuple[CocoKeypoint, CocoKeypoint]] = [
 
 
 @dataclass(frozen=True)
-class PoseDataMessage:
+class PoseDataMessage(Message):
     """Full pose detection data for visualization."""
+
     keypoints: np.ndarray | None  # Shape: (num_people, 17, 3) where 3 = [x, y, confidence]
     scores: np.ndarray | None  # Shape: (num_people,)
     boxes: list[np.ndarray] | None
-    timestamp: float
 
 
-class PoseDetectorParams(BaseModel):
+class PoseDetectorParams(NodeParams):
     """Parameters for PoseDetectorNode."""
+
     model_path: str = Field(
         default="/usr/share/imx500-models/imx500_network_higherhrnet_coco.rpk",
-        description="Path to IMX500 pose estimation model"
+        description="Path to IMX500 pose estimation model",
     )
     target_keypoint: CocoKeypoint = Field(
-        default=CocoKeypoint.NOSE,
-        description="Body part to track"
+        default=CocoKeypoint.NOSE, description="Body part to track"
     )
     detection_threshold: float = Field(
-        default=0.3,
-        ge=0.0,
-        le=1.0,
-        description="Minimum confidence for person detection"
+        default=0.3, ge=0.0, le=1.0, description="Minimum confidence for person detection"
     )
     keypoint_threshold: float = Field(
-        default=0.3,
-        ge=0.0,
-        le=1.0,
-        description="Minimum confidence for keypoint detection"
+        default=0.3, ge=0.0, le=1.0, description="Minimum confidence for keypoint detection"
     )
     inference_rate: int = Field(
-        default=10,
-        ge=1,
-        le=30,
-        description="Frames per second for inference"
+        default=10, ge=1, le=30, description="Frames per second for inference"
     )
     width: int = Field(default=640, ge=160, le=1920)
     height: int = Field(default=480, ge=120, le=1080)
 
 
-class PoseDetectorNode:
+class PoseDetectorNode(DetectorNode):
     """Detects human poses using IMX500 and tracks specific body part."""
 
-    def __init__(self, pubsub: PubSub, params: PoseDetectorParams) -> None:
-        self.pubsub = pubsub
-        self.params = params
-        self._running = False
+    params: PoseDetectorParams
+    imx500: SkipValidation[IMX500] = Field(default=None, exclude=True)
+    picam2: SkipValidation[Picamera2] = Field(default=None, exclude=True)
 
-        # Latest detection results (shared between callback and async task)
-        self._latest_keypoints: np.ndarray | None = None
-        self._latest_scores: np.ndarray | None = None
-        self._latest_boxes: list[np.ndarray] | None = None
-        self._detection_lock = asyncio.Lock()
+    # Latest detection results (shared between callback and thread)
+    _latest_keypoints: np.ndarray | None = Field(default=None, exclude=True)
+    _latest_scores: np.ndarray | None = Field(default=None, exclude=True)
+    _latest_boxes: list[np.ndarray] | None = Field(default=None, exclude=True)
+
+    @classmethod
+    def create(cls, *, pubsub: PubSub, params: PoseDetectorParams) -> "PoseDetectorNode":
+        """Factory method to create and initialize PoseDetectorNode."""
+        node = cls(pubsub=pubsub, params=params)
 
         # Initialize IMX500 before Picamera2
-        self.imx500 = IMX500(params.model_path)
-        intrinsics = self.imx500.network_intrinsics
+        node.imx500 = IMX500(params.model_path)
+        intrinsics = node.imx500.network_intrinsics
 
         if not intrinsics:
             intrinsics = NetworkIntrinsics()
@@ -128,13 +126,14 @@ class PoseDetectorNode:
         intrinsics.update_with_defaults()
 
         # Initialize camera
-        self.picam2 = Picamera2(self.imx500.camera_num)
-        config = self.picam2.create_preview_configuration(
-            controls={'FrameRate': params.inference_rate},
-            buffer_count=12
+        node.picam2 = Picamera2(node.imx500.camera_num)
+        config = node.picam2.create_preview_configuration(
+            controls={"FrameRate": params.inference_rate}, buffer_count=12
         )
-        self.picam2.configure(config)
-        self.picam2.pre_callback = self._pose_callback
+        node.picam2.configure(config)
+        node.picam2.pre_callback = node._pose_callback
+
+        return node
 
     def _pose_callback(self, request: CompletedRequest) -> None:
         """Callback to process pose detection results (runs in picamera2 thread)."""
@@ -150,13 +149,15 @@ class PoseDetectorNode:
             img_w_pad=(0, 0),
             img_h_pad=(0, 0),
             detection_threshold=self.params.detection_threshold,
-            network_postprocess=True
+            network_postprocess=True,
         )
 
         # Store results (thread-safe update)
         if scores is not None and len(scores) > 0:
             # Reshape keypoints to (num_people, 17, 3) where 3 = [x, y, confidence]
-            self._latest_keypoints = np.reshape(np.stack(keypoints, axis=0), (len(scores), 17, 3))
+            self._latest_keypoints = np.reshape(
+                np.stack(keypoints, axis=0), (len(scores), 17, 3)
+            )
             self._latest_boxes = [np.array(b) for b in boxes]
             self._latest_scores = np.array(scores)
         else:
@@ -164,13 +165,16 @@ class PoseDetectorNode:
             self._latest_scores = None
             self._latest_boxes = None
 
-    def _calculate_body_angle(self, keypoints: np.ndarray) -> float | None:
+    def _calculate_body_angle(self, *, keypoints: np.ndarray) -> float | None:
         """Calculate body orientation from shoulder line."""
         left_shoulder = keypoints[CocoKeypoint.LEFT_SHOULDER]
         right_shoulder = keypoints[CocoKeypoint.RIGHT_SHOULDER]
 
         # Check confidence
-        if left_shoulder[2] < self.params.keypoint_threshold or right_shoulder[2] < self.params.keypoint_threshold:
+        if (
+            left_shoulder[2] < self.params.keypoint_threshold
+            or right_shoulder[2] < self.params.keypoint_threshold
+        ):
             return None
 
         # Calculate angle of shoulder line
@@ -188,10 +192,10 @@ class PoseDetectorNode:
 
         return float(angle)
 
-    def _extract_target_keypoint(self) -> tuple[int, int, float] | None:
+    def detect(self, image: np.ndarray) -> tuple[int | None, int | None, float | None]:
         """Extract target keypoint from latest detection results."""
         if self._latest_keypoints is None or self._latest_scores is None:
-            return None
+            return (None, None, None)
 
         # Find person with highest score
         best_person_idx = int(np.argmax(self._latest_scores))
@@ -202,17 +206,17 @@ class PoseDetectorNode:
 
         # Check confidence
         if target_kp[2] < self.params.keypoint_threshold:
-            return None
+            return (None, None, None)
 
         x = int(target_kp[0])
         y = int(target_kp[1])
 
         # Calculate body orientation
-        angle = self._calculate_body_angle(keypoints)
+        angle = self._calculate_body_angle(keypoints=keypoints)
 
         return (x, y, angle if angle is not None else 0.0)
 
-    async def run(self) -> None:
+    def run(self) -> None:
         """Main detection loop."""
         logger.info(
             f"Starting PoseDetectorNode [target={self.params.target_keypoint.name}, "
@@ -223,43 +227,31 @@ class PoseDetectorNode:
         self.picam2.start(show_preview=False)
         self.imx500.set_auto_aspect_ratio()
 
-        await asyncio.sleep(1)
-        self._running = True
+        time.sleep(1)
 
         try:
-            while self._running:
-                # Extract target from latest detection
-                result = self._extract_target_keypoint()
+            while not self.stop_event.is_set():
+                # Extract target from latest detection - using abstract detect method
+                x, y, angle = self.detect(None)  # Frame comes from callback
 
-                if result:
-                    x, y, angle = result
-                else:
-                    x, y, angle = None, None, None
-
-                await self.pubsub.target_location.publish(
-                    TargetLocationMessage(x=x, y=y, angle=angle, timestamp=time.time())
+                self.pubsub.target_location.publish(
+                    TargetLocationMessage(x=x, y=y, angle=angle)
                 )
 
                 # Publish full pose data for visualization
-                await self.pubsub.pose_data.publish(
+                self.pubsub.pose_data.publish(
                     PoseDataMessage(
                         keypoints=self._latest_keypoints,
                         scores=self._latest_scores,
                         boxes=self._latest_boxes,
-                        timestamp=time.time()
                     )
                 )
 
                 # Publish frames for UI
                 frame = self.picam2.capture_array()
-                await self.pubsub.frame.publish(
-                    FrameMessage(frame=frame, timestamp=time.time())
-                )
+                self.pubsub.frame.publish(FrameMessage(frame=frame))
 
-                await asyncio.sleep(0.01)  # 100 Hz publishing rate
+                time.sleep(0.01)  # 100 Hz publishing rate
         finally:
             self.picam2.stop()
             logger.info("PoseDetectorNode stopped")
-
-    async def stop(self) -> None:
-        self._running = False
