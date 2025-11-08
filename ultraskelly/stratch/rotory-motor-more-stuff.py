@@ -13,7 +13,7 @@ white: DigitalInputDevice = DigitalInputDevice(12, pull_up=True)
 # Run the motor so encoder should generate signals
 kit: MotorKit = MotorKit(address=0x60)
 print("Running motor...")
-kit.motor1.throttle = 0.5
+kit.motor1.throttle = 1
 
 # Watch for changes
 print("Watching for signal changes for 5 seconds...")
