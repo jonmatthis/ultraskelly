@@ -4,10 +4,10 @@ from typing import TypeVar, Generic, Callable, ClassVar
 
 from pydantic import BaseModel, Field, ConfigDict, create_model, SkipValidation
 
+logger = logging.getLogger(__name__)
 TopicPublicationQueue= SkipValidation[multiprocessing.Queue]
 TopicSubscriptionQueue= SkipValidation[multiprocessing.Queue]
 
-logger = logging.getLogger(__name__)
 
 
 class TopicMessageABC(BaseModel):

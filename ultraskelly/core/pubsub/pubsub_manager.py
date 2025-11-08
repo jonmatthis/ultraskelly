@@ -4,7 +4,6 @@
 # ============================================================================
 
 import logging
-logger = logging.getLogger(__name__)
 from multiprocessing import parent_process
 
 from pydantic import BaseModel, Field, ConfigDict
