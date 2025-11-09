@@ -621,13 +621,13 @@ class GradioUINode(Node):
             # Build and launch Gradio app
             self.app = self._build_gradio_app()
             
-            # Launch with queue for proper async handling
-            self.app.queue()
+            # Launch WITHOUT queue - timers don't need it
             self.app.launch(
                 server_name=self.params.server_name,
                 server_port=self.params.port,
                 share=self.params.share,
-                prevent_thread_lock=False,  # Let Gradio handle the main thread
+                prevent_thread_lock=False,
+                share=True
             )
             
         except Exception as e:
@@ -637,7 +637,6 @@ class GradioUINode(Node):
             self.stop_event.set()
             update_thread.join(timeout=2.0)
             logger.info("GradioUINode stopped")
-
 
 # Export for use in bot_launcher.py
 UINode = GradioUINode

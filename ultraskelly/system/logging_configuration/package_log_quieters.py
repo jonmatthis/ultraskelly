@@ -14,4 +14,6 @@ def suppress_noisy_package_logs():
     logging.getLogger("comtypes").setLevel(logging.WARNING)
     logging.getLogger("uvicorn").setLevel(logging.WARNING)
     logging.getLogger("PIL").setLevel(logging.WARNING)
+    logging.getLogger("picamera2").setLevel(logging.WARNING)
+    
 

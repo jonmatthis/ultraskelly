@@ -15,7 +15,7 @@ from ultraskelly.core.bot.sensory.pose_detection_node import (
     PoseDetectorNode,
     PoseDetectorParams,
 )
-from ultraskelly.ui.gradio_ui import UINode, UINodeParams
+from ultraskelly.ui.cv2_ui import UINode, UINodeParams
 from ultraskelly.core.pubsub.pubsub_manager import (
     PubSubTopicManager,
     get_or_create_pipeline_pubsub_manager,

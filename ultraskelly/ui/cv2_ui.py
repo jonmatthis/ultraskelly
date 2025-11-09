@@ -7,6 +7,8 @@ import cv2
 import numpy as np
 from pydantic import Field, SkipValidation
 
+from ultraskelly.core.pubsub.bot_topics import FrameTopic, PoseDataTopic, ServoStateTopic, TargetLocationTopic
+
 logger = logging.getLogger(__name__)
 from ultraskelly.core.bot.base_abcs import Node, NodeParams
 from ultraskelly.core.bot.motor.head_node import ServoStateMessage, TargetLocationMessage
@@ -52,10 +54,10 @@ class UINode(Node):
         node = cls(pubsub=pubsub, params=params)
 
         # Subscribe to all necessary topics
-        node.frame_queue = pubsub.frame.subscribe()
-        node.target_queue = pubsub.target_location.subscribe()
-        node.servo_state_queue = pubsub.servo_state.subscribe()
-        node.pose_data_queue = pubsub.pose_data.subscribe()
+        node.frame_queue = pubsub.topics[FrameTopic].get_subscription()
+        node.target_queue = pubsub.topics[TargetLocationTopic].get_subscription()
+        node.servo_state_queue = pubsub.topics[ServoStateTopic].get_subscription()
+        node.pose_data_queue = pubsub.topics[PoseDataTopic].get_subscription()
 
         return node
 
