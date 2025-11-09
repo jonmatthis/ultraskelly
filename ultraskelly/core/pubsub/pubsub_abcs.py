@@ -1,13 +1,12 @@
+import asyncio
 import logging
-import multiprocessing
 from typing import TypeVar, Generic, Callable, ClassVar
 
 from pydantic import BaseModel, Field, ConfigDict, create_model, SkipValidation
 
 logger = logging.getLogger(__name__)
-TopicPublicationQueue= SkipValidation[multiprocessing.Queue]
-TopicSubscriptionQueue= SkipValidation[multiprocessing.Queue]
-
+TopicPublicationQueue = SkipValidation[asyncio.Queue]
+TopicSubscriptionQueue = SkipValidation[asyncio.Queue]
 
 
 class TopicMessageABC(BaseModel):
@@ -29,7 +28,7 @@ class PubSubTopicABC(BaseModel, Generic[MessageType]):
     topic_registry: ClassVar[set[type['PubSubTopicABC']]] = set()
 
     message_type: type[TopicMessageABC]
-    publication: TopicPublicationQueue = Field(default_factory=TopicPublicationQueue)
+    publication: TopicPublicationQueue = Field(default_factory=lambda: asyncio.Queue())
     subscriptions: list[TopicSubscriptionQueue] = Field(default_factory=list)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -45,23 +44,19 @@ class PubSubTopicABC(BaseModel, Generic[MessageType]):
         return cls.topic_registry.copy()
 
     def get_subscription(self) -> TopicSubscriptionQueue:
-        sub = TopicSubscriptionQueue()
+        sub = asyncio.Queue()
         self.subscriptions.append(sub)
         return sub
 
-    def publish(self, message: MessageType) -> None:
+    async def publish(self, message: MessageType) -> None:
         if not isinstance(message, self.message_type):
             raise TypeError(f"Message must be of type {self.message_type.__name__}, got {type(message).__name__}")
-        self.publication.put(message)
+        await self.publication.put(message)
         for sub in self.subscriptions:
-            sub.put(message)
+            await sub.put(message)
 
     def close(self) -> None:
-        if hasattr(self.publication, 'close'):
-            self.publication.close()
-        for sub in self.subscriptions:
-            if hasattr(sub, 'close'):
-                sub.close()
+        # AsyncIO queues don't need explicit closing
         self.subscriptions.clear()
 
 
@@ -92,6 +87,11 @@ def create_topic(
         field_definitions['publication'] = (
             TopicPublicationQueue,
             Field(default_factory=publication_factory)
+        )
+    else:
+        field_definitions['publication'] = (
+            TopicPublicationQueue,
+            Field(default_factory=lambda: asyncio.Queue())
         )
 
     # Use Pydantic's create_model - the proper v2 way!

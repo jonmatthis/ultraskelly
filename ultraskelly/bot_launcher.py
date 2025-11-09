@@ -1,5 +1,5 @@
+import asyncio
 import logging
-from threading import Thread
 
 from pydantic import BaseModel, Field, SkipValidation, ConfigDict
 
@@ -43,7 +43,7 @@ class BotLauncher(BaseModel):
     config: LaunchConfig
     pubsub: SkipValidation[PubSubTopicManager]
     nodes: list[Node] = Field(default_factory=list)
-    workers: list[Thread] = Field(default_factory=list, exclude=True)
+    tasks: list[asyncio.Task] = Field(default_factory=list, exclude=True)
 
     @classmethod
     def from_config(cls, config: LaunchConfig) -> "BotLauncher":
@@ -76,22 +76,20 @@ class BotLauncher(BaseModel):
         logger.info(f"Created {len(launcher.nodes)} nodes")
         return launcher
 
-    def run(self) -> None:
+    async def run(self) -> None:
         """Launch all nodes."""
         logger.info("=" * 60)
         logger.info("LAUNCHING TARGET TRACKER WITH SOPHISTICATED PUBSUB")
         logger.info("=" * 60)
 
         try:
-            # Start all nodes in separate threads
+            # Start all nodes as async tasks
             for node in self.nodes:
-                thread = Thread(target=node.run)
-                thread.start()
-                self.workers.append(thread)
+                task = asyncio.create_task(node.run())
+                self.tasks.append(task)
 
-            # Wait for all threads
-            for thread in self.workers:
-                thread.join()
+            # Wait for all tasks
+            await asyncio.gather(*self.tasks)
 
         except KeyboardInterrupt:
             logger.info("\nStopping...")
@@ -100,9 +98,12 @@ class BotLauncher(BaseModel):
             for node in self.nodes:
                 node.stop()
 
-            # Wait for threads
-            for thread in self.workers:
-                thread.join(timeout=2.0)
+            # Cancel all tasks
+            for task in self.tasks:
+                task.cancel()
+
+            # Wait for tasks to finish cancelling
+            await asyncio.gather(*self.tasks, return_exceptions=True)
 
             # Clean up pubsub
             self.pubsub.close()

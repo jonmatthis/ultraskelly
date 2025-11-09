@@ -1,10 +1,9 @@
-
 # ============================================================================
 # PubSubTopicManager - Auto-discovers and manages all registered topics
 # ============================================================================
 
+import asyncio
 import logging
-from multiprocessing import parent_process
 
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -19,7 +18,7 @@ class PubSubTopicManager(BaseModel):
     Usage:
         manager = PubSubTopicManager.create()
         sub = manager.get_subscription(ProcessFrameNumberTopic)
-        manager.publish(ProcessFrameNumberTopic, message)
+        await manager.publish(ProcessFrameNumberTopic, message)
     """
 
     # Dict maps topic classes to their instances: {ProcessFrameNumberTopic: <instance>}
@@ -43,9 +42,6 @@ class PubSubTopicManager(BaseModel):
         Args:
             topic_type: The topic CLASS (e.g., ProcessFrameNumberTopic)
         """
-        if parent_process() is not None:
-            raise RuntimeError("Subscriptions must be created in the main process and passed to children")
-
         if topic_type not in self.topics:
             raise ValueError(
                 f"Unknown topic type: {topic_type.__name__}. "
@@ -59,7 +55,7 @@ class PubSubTopicManager(BaseModel):
         )
         return sub
 
-    def publish(
+    async def publish(
         self,
         topic_type: type[PubSubTopicABC[MessageType]],
         message: MessageType
@@ -77,7 +73,7 @@ class PubSubTopicManager(BaseModel):
                 f"Available topics: {[t.__name__ for t in self.topics.keys()]}"
             )
 
-        self.topics[topic_type].publish(message)
+        await self.topics[topic_type].publish(message)
 
     def close(self) -> None:
         """Close all topics in the manager."""
@@ -92,13 +88,10 @@ PIPELINE_PUB_SUB_MANAGER: PubSubTopicManager | None = None
 
 
 def get_or_create_pipeline_pubsub_manager() -> PubSubTopicManager:
-    """Create/replace manager for a pipeline. Must be called from main process."""
+    """Create/replace manager for a pipeline."""
     global PIPELINE_PUB_SUB_MANAGER
 
-    if parent_process() is not None:
-        raise RuntimeError("PubSubManager can only be created in the main process.")
-
     if PIPELINE_PUB_SUB_MANAGER is None:
-        PIPELINE_PUB_SUB_MANAGER =  PubSubTopicManager.create()
+        PIPELINE_PUB_SUB_MANAGER = PubSubTopicManager.create()
 
     return PIPELINE_PUB_SUB_MANAGER

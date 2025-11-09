@@ -1,13 +1,12 @@
+import asyncio
 import logging
-import time
 
 import numpy as np
 from adafruit_servokit import ServoKit
 
 from pydantic import Field, SkipValidation
 
-from ultraskelly import FAIL_ON_IMPORTS
-from ultraskelly.core.bot.base_abcs import Node, NodeParams
+from ultraskelly.core.bot.base_abcs import NodeParams, Node
 from ultraskelly.core.pubsub.bot_topics import (
     ServoStateMessage,
     ServoStateTopic,
@@ -15,7 +14,6 @@ from ultraskelly.core.pubsub.bot_topics import (
     TargetLocationTopic,
 )
 from ultraskelly.core.pubsub.pubsub_abcs import TopicSubscriptionQueue
-from ultraskelly.core.pubsub.pubsub_manager import PubSubTopicManager
 
 logger = logging.getLogger(__name__)
 
@@ -136,18 +134,22 @@ class MotorNode(Node):
             is_locked_roll=is_locked_roll,
         )
 
-    def run(self) -> None:
+    async def run(self) -> None:
         """Main motor control loop."""
         logger.info(f"Starting MotorNode [gain={self.params.gain}]")
 
         try:
             while not self.stop_event.is_set():
                 try:
-                    # Get message from subscription queue
-                    if not self.target_subscription.empty():
-                        msg = self.target_subscription.get(timeout=0.1)
-                        state = self._update_servos(msg=msg)
-                        self.pubsub.publish(ServoStateTopic, state)
+                    # Get message from subscription queue with timeout
+                    msg = await asyncio.wait_for(
+                        self.target_subscription.get(),
+                        timeout=0.1
+                    )
+                    state = self._update_servos(msg=msg)
+                    await self.pubsub.publish(ServoStateTopic, state)
+                except asyncio.TimeoutError:
+                    continue
                 except Exception:
                     continue
         finally:
@@ -155,7 +157,7 @@ class MotorNode(Node):
             self.kit.servo[self.params.pan_channel].angle = 90.0
             self.kit.servo[self.params.tilt_channel].angle = 90.0
             self.kit.servo[self.params.roll_channel].angle = 90.0
-            time.sleep(0.5)
+            await asyncio.sleep(0.5)
             self.kit.servo[self.params.pan_channel].angle = None
             self.kit.servo[self.params.tilt_channel].angle = None
             self.kit.servo[self.params.roll_channel].angle = None

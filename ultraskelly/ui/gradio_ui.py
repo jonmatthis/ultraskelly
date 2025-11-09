@@ -38,7 +38,7 @@ class UINodeParams(NodeParams):
     network_update_interval: float = Field(default=2.0, gt=0.0)  # Network graph update rate
     port: int = Field(default=7860, ge=1024)
     server_name: str = Field(default="0.0.0.0")
-    share: bool = Field(default=False)
+    share: bool = Field(default=True)
 
 
 @dataclass
@@ -627,7 +627,6 @@ class GradioUINode(Node):
                 server_port=self.params.port,
                 share=self.params.share,
                 prevent_thread_lock=False,
-                share=True
             )
             
         except Exception as e:

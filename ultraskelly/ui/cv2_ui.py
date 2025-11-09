@@ -1,7 +1,6 @@
+import asyncio
 import logging
-import queue
 import time
-from threading import Thread
 
 import cv2
 import numpy as np
@@ -224,46 +223,47 @@ class UINode(Node):
 
         return frame
 
-    def _update_state(self) -> None:
-        """Background thread to consume queue updates."""
+    async def _update_state(self) -> None:
+        """Background task to consume queue updates."""
         while not self.stop_event.is_set():
             try:
                 # Drain queues to get latest values
-                while True:
+                while not self.target_queue.empty():
                     try:
                         self.latest_target = self.target_queue.get_nowait()
-                    except queue.Empty:
+                    except asyncio.QueueEmpty:
                         break
 
-                while True:
+                while not self.servo_state_queue.empty():
                     try:
                         self.latest_servo_state = self.servo_state_queue.get_nowait()
-                    except queue.Empty:
+                    except asyncio.QueueEmpty:
                         break
 
-                while True:
+                while not self.pose_data_queue.empty():
                     try:
                         self.latest_pose_data = self.pose_data_queue.get_nowait()
-                    except queue.Empty:
+                    except asyncio.QueueEmpty:
                         break
 
-                time.sleep(0.001)
+                await asyncio.sleep(0.001)
             except Exception as e:
-                logger.error(f"Error in UI update thread: {e}")
+                logger.error(f"Error in UI update task: {e}")
                 raise
 
-    def run(self) -> None:
+    async def run(self) -> None:
         """Main UI loop."""
         logger.info(f"Starting UINode [window='{self.params.window_name}']")
 
-        # Start update thread
-        update_thread = Thread(target=self._update_state)
-        update_thread.start()
+        # Start update task
+        update_task = asyncio.create_task(self._update_state())
 
         try:
             while not self.stop_event.is_set():
                 try:
-                    frame_msg: FrameMessage = self.frame_queue.get(timeout=0.1)
+                    frame_msg: FrameMessage = await asyncio.wait_for(
+                        self.frame_queue.get(), timeout=0.1
+                    )
                     vis_frame = self._draw_visualization(frame=frame_msg.frame)
 
                     self.frame_count += 1
@@ -276,15 +276,20 @@ class UINode(Node):
                         self.params.window_name, cv2.cvtColor(vis_frame, cv2.COLOR_RGB2BGR)
                     )
 
+                    # Non-blocking key check
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         self.stop_event.set()
                         break
 
-                    time.sleep(0.001)
-                except queue.Empty:
+                    await asyncio.sleep(0.001)
+                except asyncio.TimeoutError:
                     continue
         finally:
             self.stop_event.set()
-            update_thread.join()
+            update_task.cancel()
+            try:
+                await update_task
+            except asyncio.CancelledError:
+                pass
             cv2.destroyAllWindows()
             logger.info("UINode stopped")

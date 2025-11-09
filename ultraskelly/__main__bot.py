@@ -4,6 +4,7 @@ Target Tracker with Pose Estimation Integration
 ROS2-inspired architecture: independent nodes + parameter system + launch config.
 Now includes IMX500-based human pose tracking.
 """
+import asyncio
 import logging
 from ultraskelly.core.bot.base_abcs import DetectorType
 from ultraskelly.bot_launcher import LaunchConfig, BotLauncher
@@ -12,8 +13,7 @@ from ultraskelly.core.bot.sensory.pose_detection_node import PoseDetectorParams,
 logger = logging.getLogger(__name__)
 
 
-
-def main() -> None:
+async def main() -> None:
     """Launch with declarative config."""
 
     # Example 1: Default pose tracking (nose)
@@ -43,8 +43,8 @@ def main() -> None:
     # )
 
     launcher = BotLauncher.from_config(config)
-    launcher.run()
+    await launcher.run()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

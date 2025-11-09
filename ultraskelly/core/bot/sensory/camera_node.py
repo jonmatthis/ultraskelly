@@ -1,5 +1,5 @@
+import asyncio
 import logging
-import time
 
 from pydantic import Field, SkipValidation
 
@@ -7,7 +7,7 @@ from ultraskelly import FAIL_ON_IMPORTS
 
 logger = logging.getLogger(__name__)
 
-from ultraskelly.core.bot.base_abcs import  Node, NodeParams
+from ultraskelly.core.bot.base_abcs import Node, NodeParams
 from ultraskelly.core.pubsub.bot_topics import FrameMessage, FrameTopic
 from ultraskelly.core.pubsub.pubsub_manager import PubSubTopicManager
 
@@ -24,8 +24,6 @@ class VisionNodeParams(NodeParams):
 
     width: int = Field(default=640, ge=160, le=1920)
     height: int = Field(default=480, ge=120, le=1080)
-
-
 
 
 class VisionNode(Node):
@@ -48,17 +46,17 @@ class VisionNode(Node):
 
         return node
 
-    def run(self) -> None:
+    async def run(self) -> None:
         """Main vision node loop."""
         logger.info(f"Starting VisionNode [{self.params.width}x{self.params.height}]")
         self.picam2.start()
-        time.sleep(1)
+        await asyncio.sleep(1)
 
         try:
             while not self.stop_event.is_set():
                 frame = self.picam2.capture_array()
-                self.pubsub.topics[FrameTopic].publish(FrameMessage(frame=frame))
-                time.sleep(0.001)
+                await self.pubsub.topics[FrameTopic].publish(FrameMessage(frame=frame))
+                await asyncio.sleep(0.001)
         finally:
             self.picam2.stop()
             logger.info("VisionNode stopped")

@@ -1,5 +1,5 @@
+import asyncio
 import logging
-import time
 from dataclasses import dataclass
 from enum import IntEnum
 
@@ -75,9 +75,6 @@ SKELETON_CONNECTIONS: list[tuple[CocoKeypoint, CocoKeypoint]] = [
 ]
 
 
-
-
-
 class PoseDetectorParams(NodeParams):
     """Parameters for PoseDetectorNode."""
 
@@ -108,7 +105,7 @@ class PoseDetectorNode(DetectorNode):
     imx500: SkipValidation[IMX500] = Field(default=None, exclude=True)
     picam2: SkipValidation[Picamera2] = Field(default=None, exclude=True)
 
-    # Latest detection results (shared between callback and thread)
+    # Latest detection results (shared between callback and coroutine)
     latest_keypoints: np.ndarray | None = Field(default=None, exclude=True)
     latest_scores: np.ndarray | None = Field(default=None, exclude=True)
     latest_boxes: list[np.ndarray] | None = Field(default=None, exclude=True)
@@ -222,7 +219,7 @@ class PoseDetectorNode(DetectorNode):
 
         return (x, y, angle if angle is not None else 0.0)
 
-    def run(self) -> None:
+    async def run(self) -> None:
         """Main detection loop."""
         logger.info(
             f"Starting PoseDetectorNode [target={self.params.target_keypoint.name}, "
@@ -233,19 +230,19 @@ class PoseDetectorNode(DetectorNode):
         self.picam2.start(show_preview=False)
         self.imx500.set_auto_aspect_ratio()
 
-        time.sleep(1)
+        await asyncio.sleep(1)
 
         try:
             while not self.stop_event.is_set():
                 # Extract target from latest detection - using abstract detect method
                 x, y, angle = self.detect()  # Frame comes from callback
 
-                self.pubsub.topics[TargetLocationTopic].publish(
+                await self.pubsub.topics[TargetLocationTopic].publish(
                     TargetLocationMessage(x=x, y=y, angle=angle)
                 )
 
                 # Publish full pose data for visualization
-                self.pubsub.topics[PoseDataTopic].publish(
+                await self.pubsub.topics[PoseDataTopic].publish(
                     PoseDataMessage(
                         keypoints=self.latest_keypoints,
                         scores=self.latest_scores,
@@ -255,9 +252,9 @@ class PoseDetectorNode(DetectorNode):
 
                 # Publish frames for UI
                 frame = self.picam2.capture_array()
-                self.pubsub.topics[FrameTopic].publish(FrameMessage(frame=frame))
+                await self.pubsub.topics[FrameTopic].publish(FrameMessage(frame=frame))
 
-                time.sleep(0.01)  # 100 Hz publishing rate
+                await asyncio.sleep(0.01)  # 100 Hz publishing rate
         finally:
             self.picam2.stop()
             logger.info("PoseDetectorNode stopped")

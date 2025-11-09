@@ -1,12 +1,12 @@
+import asyncio
 import logging
-import queue
 import time
-
 
 import numpy as np
 from pydantic import Field, SkipValidation, field_validator
 
 from ultraskelly import FAIL_ON_IMPORTS
+from ultraskelly.core.pubsub.bot_topics import TargetLocationTopic, FrameTopic
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class BrightnessDetectorNode(DetectorNode):
     ) -> "BrightnessDetectorNode":
         """Factory method to create and initialize BrightnessDetectorNode."""
         node = cls(pubsub=pubsub, params=params)
-        node.frame_queue = pubsub.frame.subscribe()
+        node.frame_queue = pubsub.topics[FrameTopic].get_subscription()
         return node
 
     def detect(self, image: np.ndarray) -> tuple[int | None, int | None, float | None]:
@@ -98,7 +98,7 @@ class BrightnessDetectorNode(DetectorNode):
 
         return (int(center[0]), int(center[1]), rotation_angle)
 
-    def run(self) -> None:
+    async def run(self) -> None:
         """Main detection loop."""
         logger.info(
             f"Starting BrightnessDetectorNode [blur={self.params.blur_size}, "
@@ -108,13 +108,15 @@ class BrightnessDetectorNode(DetectorNode):
         try:
             while not self.stop_event.is_set():
                 try:
-                    frame_msg: FrameMessage = self.frame_queue.get(timeout=0.1)
+                    frame_msg: FrameMessage = await asyncio.wait_for(
+                        self.frame_queue.get(), timeout=0.1
+                    )
                     x, y, angle = self.detect(frame_msg.frame)
 
-                    self.pubsub.target_location.publish(
-                        TargetLocationMessage(x=x, y=y, angle=angle, timestamp=time.time())
+                    await self.pubsub.topics[TargetLocationTopic].publish(
+                        TargetLocationMessage(x=x, y=y, angle=angle)
                     )
-                except queue.Empty:
+                except asyncio.TimeoutError:
                     continue
         finally:
             logger.info("BrightnessDetectorNode stopped")
