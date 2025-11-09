@@ -14,6 +14,7 @@ from ultraskelly.core.pubsub.bot_topics import (
     TargetLocationTopic,
 )
 from ultraskelly.core.pubsub.pubsub_abcs import TopicSubscriptionQueue
+from ultraskelly.core.pubsub.pubsub_manager import PubSubTopicManager
 
 logger = logging.getLogger(__name__)
 

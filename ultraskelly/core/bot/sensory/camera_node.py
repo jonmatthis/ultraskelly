@@ -11,13 +11,7 @@ from ultraskelly.core.bot.base_abcs import Node, NodeParams
 from ultraskelly.core.pubsub.bot_topics import FrameMessage, FrameTopic
 from ultraskelly.core.pubsub.pubsub_manager import PubSubTopicManager
 
-try:
-    from picamera2 import Picamera2
-except ImportError:
-    if FAIL_ON_IMPORTS:
-        raise
-    logger.error("Picamera2 library not found - vision node will not work.")
-    Picamera2 = None  # type: ignore
+from picamera2 import Picamera2
 
 class VisionNodeParams(NodeParams):
     """Parameters for VisionNode."""

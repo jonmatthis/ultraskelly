@@ -17,15 +17,9 @@ from ultraskelly.core.bot.base_abcs import DetectorNode, NodeParams
 from ultraskelly.core.bot.motor.head_node import TargetLocationMessage
 from ultraskelly.core.bot.sensory.camera_node import FrameMessage
 
-try:
-    from picamera2 import CompletedRequest, Picamera2
-    from picamera2.devices.imx500 import IMX500, NetworkIntrinsics
-    from picamera2.devices.imx500.postprocess_highernet import postprocess_higherhrnet
-except ImportError:
-    if FAIL_ON_IMPORTS:
-        raise
-    logger.error("Picamera2 library not found - vision node will not work.")
-
+from picamera2 import CompletedRequest, Picamera2
+from picamera2.devices.imx500 import IMX500, NetworkIntrinsics
+from picamera2.devices.imx500.postprocess_highernet import postprocess_higherhrnet
 
 class CocoKeypoint(IntEnum):
     """COCO pose estimation keypoint indices."""

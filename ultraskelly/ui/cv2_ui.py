@@ -261,20 +261,21 @@ class UINode(Node):
         try:
             while not self.stop_event.is_set():
                 try:
-                    frame_msg: FrameMessage = await asyncio.wait_for(
-                        self.frame_queue.get(), timeout=0.1
-                    )
-                    vis_frame = self._draw_visualization(frame=frame_msg.frame)
+                    if not self.frame_queue.empty():
+                        frame_msg: FrameMessage = await asyncio.wait_for(
+                            self.frame_queue.get(), timeout=0.1
+                        )
+                        vis_frame = self._draw_visualization(frame=frame_msg.frame)
 
-                    self.frame_count += 1
-                    if time.time() - self.last_fps_time >= 1.0:
-                        self.fps = self.frame_count / (time.time() - self.last_fps_time)
-                        self.frame_count = 0
-                        self.last_fps_time = time.time()
+                        self.frame_count += 1
+                        if time.time() - self.last_fps_time >= 1.0:
+                            self.fps = self.frame_count / (time.time() - self.last_fps_time)
+                            self.frame_count = 0
+                            self.last_fps_time = time.time()
 
-                    cv2.imshow(
-                        self.params.window_name, cv2.cvtColor(vis_frame, cv2.COLOR_RGB2BGR)
-                    )
+                        cv2.imshow(
+                            self.params.window_name, cv2.cvtColor(vis_frame, cv2.COLOR_RGB2BGR)
+                        )
 
                     # Non-blocking key check
                     if cv2.waitKey(1) & 0xFF == ord("q"):
