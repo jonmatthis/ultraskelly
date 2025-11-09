@@ -7,6 +7,7 @@ import numpy as np
 from pydantic import Field, SkipValidation
 
 from ultraskelly.core.pubsub.bot_topics import FrameTopic, PoseDataTopic, ServoStateTopic, TargetLocationTopic
+from ultraskelly.core.pubsub.pubsub_abcs import TopicSubscriptionQueue
 
 logger = logging.getLogger(__name__)
 from ultraskelly.core.bot.base_abcs import Node, NodeParams
@@ -32,10 +33,10 @@ class UINode(Node):
     params: UINodeParams
 
     # Queue subscriptions
-    frame_queue: SkipValidation[object] = Field(default=None, exclude=True)
-    target_queue: SkipValidation[object] = Field(default=None, exclude=True)
-    servo_state_queue: SkipValidation[object] = Field(default=None, exclude=True)
-    pose_data_queue: SkipValidation[object] = Field(default=None, exclude=True)
+    frame_queue: SkipValidation[TopicSubscriptionQueue] = Field(default=None, exclude=True)
+    target_queue: SkipValidation[TopicSubscriptionQueue] = Field(default=None, exclude=True)
+    servo_state_queue: SkipValidation[TopicSubscriptionQueue] = Field(default=None, exclude=True)
+    pose_data_queue: SkipValidation[TopicSubscriptionQueue] = Field(default=None, exclude=True)
 
     # Latest state from queues
     latest_target: TargetLocationMessage | None = Field(default=None, exclude=True)
