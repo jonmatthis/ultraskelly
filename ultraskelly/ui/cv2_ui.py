@@ -263,9 +263,7 @@ class UINode(Node):
             while not self.stop_event.is_set():
                 try:
                     if not self.frame_queue.empty():
-                        frame_msg: FrameMessage = await asyncio.wait_for(
-                            self.frame_queue.get(), timeout=0.1
-                        )
+                        frame_msg: FrameMessage = await  self.frame_queue.get()
                         vis_frame = self._draw_visualization(frame=frame_msg.frame)
 
                         self.frame_count += 1
