@@ -1,9 +1,8 @@
 from adafruit_motor.motor import DCMotor
 from adafruit_motorkit import MotorKit
-
-from ultraskelly.core.bot.base_abcs import NodeParams, Node
 from pydantic import Field, SkipValidation
 
+from ultraskelly.core.bot.base_abcs import NodeParams, Node
 from ultraskelly.core.pubsub.bot_topics import ServoStateTopic
 from ultraskelly.core.pubsub.pubsub_abcs import TopicSubscriptionQueue
 from ultraskelly.core.pubsub.pubsub_manager import PubSubTopicManager
@@ -28,6 +27,7 @@ class MouthNode(Node):
         """Factory method to create and initialize MouthNode."""
 
         motor_kit = MotorKit(address=0x60, pwm_frequency=1600)
+        mouth_motor: DCMotor|None = None
         match params.mouth_motor_channel:
             case 1:
                 mouth_motor = motor_kit.motor1
@@ -39,9 +39,13 @@ class MouthNode(Node):
                 mouth_motor = motor_kit.motor4
             case _:
                 raise ValueError(f"Invalid mouth motor channel: {params.mouth_motor_channel}")
-        mouth_motor = motor_kit.motor
 
+        if mouth_motor is None:
+            raise ValueError(f"Could not initialize mouth motor on channel {params.mouth_motor_channel}")
         # Get subscription
         head_servo_subscription = pubsub.get_subscription(ServoStateTopic)
         return cls(pubsub=pubsub,
-                   params=params)
+                   params=params,
+                   motor_kit=motor_kit,
+                   mouth_motor=mouth_motor,
+                   head_servo_subscription=head_servo_subscription)
