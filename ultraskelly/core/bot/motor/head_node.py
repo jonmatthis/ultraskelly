@@ -18,8 +18,8 @@ from ultraskelly.core.pubsub.pubsub_manager import PubSubTopicManager
 
 logger = logging.getLogger(__name__)
 
-class MotorNodeParams(NodeParams):
-    """Parameters for MotorNode."""
+class HeadNodeParams(NodeParams):
+    """Parameters for HeadNode."""
 
     pan_channel: int = Field(default=11, ge=0, le=15)
     tilt_channel: int = Field(default=3, ge=0, le=15)
@@ -43,10 +43,10 @@ class MotorNodeParams(NodeParams):
         return int(self.offset_y_ratio * self.target_y * 2)
 
 
-class MotorNode(Node):
+class HeadNode(Node):
     """Generic servo controller - tracks whatever target is published."""
 
-    params: MotorNodeParams
+    params: HeadNodeParams
     kit: SkipValidation[ServoKit] = Field(default=None, exclude=True)
     pan_angle: float = Field(default=90.0)
     tilt_angle: float = Field(default=90.0)
@@ -55,8 +55,8 @@ class MotorNode(Node):
     target_subscription: SkipValidation[TopicSubscriptionQueue] = Field(default=None, exclude=True)
 
     @classmethod
-    def create(cls, *, pubsub: PubSubTopicManager, params: MotorNodeParams) -> "MotorNode":
-        """Factory method to create and initialize MotorNode."""
+    def create(cls, *, pubsub: PubSubTopicManager, params: HeadNodeParams) -> "HeadNode":
+        """Factory method to create and initialize HeadNode."""
         node = cls(pubsub=pubsub, params=params)
 
         # Initialize servos
@@ -137,7 +137,7 @@ class MotorNode(Node):
 
     async def run(self) -> None:
         """Main motor control loop."""
-        logger.info(f"Starting MotorNode [gain={self.params.gain}]")
+        logger.info(f"Starting HeadNode [gain={self.params.gain}]")
 
         try:
             while not self.stop_event.is_set():
@@ -162,4 +162,4 @@ class MotorNode(Node):
             self.kit.servo[self.params.pan_channel].angle = None
             self.kit.servo[self.params.tilt_channel].angle = None
             self.kit.servo[self.params.roll_channel].angle = None
-            logger.info("MotorNode stopped")
+            logger.info("HeadNode stopped")

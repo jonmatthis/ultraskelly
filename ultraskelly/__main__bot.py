@@ -24,7 +24,7 @@ async def main() -> None:
             detection_threshold=0.4,
             keypoint_threshold=0.4,
         ),
-        motor=MotorNodeParams(gain=0.08, deadzone=40),
+        head=MotorNodeParams(gain=0.08, deadzone=40),
     )
 
     # Example : Track left wrist

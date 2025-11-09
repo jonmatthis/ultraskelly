@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, SkipValidation, ConfigDict
 
 logger = logging.getLogger(__name__)
 from ultraskelly.core.bot.base_abcs import DetectorType, Node, NodeParams
-from ultraskelly.core.bot.motor.head_node import MotorNode, MotorNodeParams
+from ultraskelly.core.bot.motor.head_node import HeadNode, HeadNodeParams
 from ultraskelly.core.bot.sensory.bright_point_detection_node import (
     BrightnessDetectorNode,
     BrightnessDetectorParams,
@@ -33,7 +33,7 @@ class LaunchConfig(NodeParams):
         default_factory=BrightnessDetectorParams
     )
     pose_detector: PoseDetectorParams = Field(default_factory=PoseDetectorParams)
-    motor: MotorNodeParams = Field(default_factory=MotorNodeParams)
+    head: HeadNodeParams = Field(default_factory=HeadNodeParams)
     ui: UINodeParams = Field(default_factory=UINodeParams)
 
 
@@ -53,7 +53,7 @@ class BotLauncher(BaseModel):
         launcher = cls(config=config, pubsub=get_or_create_pipeline_pubsub_manager())
 
         # Create motor and UI nodes
-        launcher.nodes.append(MotorNode.create(pubsub=launcher.pubsub, params=config.motor))
+        launcher.nodes.append(HeadNode.create(pubsub=launcher.pubsub, params=config.head))
         launcher.nodes.append(UINode.create(pubsub=launcher.pubsub, params=config.ui))
 
         # Create detector based on type
