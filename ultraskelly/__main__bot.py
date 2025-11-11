@@ -8,7 +8,7 @@ import asyncio
 import logging
 from ultraskelly.core.bot.base_abcs import DetectorType
 from ultraskelly.bot_launcher import LaunchConfig, BotLauncher
-from ultraskelly.core.bot.motor.head_node import MotorNodeParams
+from ultraskelly.core.bot.motor.head_node import HeadNodeParams
 from ultraskelly.core.bot.sensory.pose_detection_node import PoseDetectorParams, CocoKeypoint
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ async def main() -> None:
             detection_threshold=0.4,
             keypoint_threshold=0.4,
         ),
-        head=MotorNodeParams(gain=0.08, deadzone=40),
+        head=HeadNodeParams(gain=0.08, deadzone=40),
     )
 
     # Example : Track left wrist
@@ -39,7 +39,7 @@ async def main() -> None:
     # config = LaunchConfig(
     #     detector_type=DetectorType.BRIGHTNESS,
     #     brightness_detector=BrightnessDetectorParams(blur_size=21, threshold=150),
-    #     motor=MotorNodeParams(gain=0.08, deadzone=20),
+    #     motor=HeadNodeParams(gain=0.08, deadzone=20),
     # )
 
     launcher = BotLauncher.from_config(config)

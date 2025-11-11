@@ -132,22 +132,20 @@ class PoseDetectorNode(DetectorNode):
         intrinsics.inference_rate = params.inference_rate
         intrinsics.update_with_defaults()
 
-        # Initialize camera with transform for upside-down mounting
+        # Initialize camera
         node.picam2 = Picamera2(node.imx500.camera_num)
 
-        # Apply 180-degree rotation if camera is upside down
-        # This transform applies to ALL streams including the low-res stream used for inference
-        transform = Transform(vflip=params.flip_camera, hflip=params.flip_camera)
+        # Create transform for 180-degree rotation if camera is upside down
+        transform = Transform(hflip=params.flip_camera, vflip=params.flip_camera)
 
-        # Create configuration with IMX500
-        # The IMX500 uses the 'lores' stream for inference
-        config = node.imx500.make_preset(
-            picam2=node.picam2,
+        # Create configuration using Picamera2's create_preview_configuration
+        # This applies the transform to ALL streams including the lores stream used for inference
+        config = node.picam2.create_preview_configuration(
+            main={"size": (params.width, params.height)},
+            lores={"size": (params.width, params.height)},  # Ensure lores matches for inference
             controls={"FrameRate": params.inference_rate},
             buffer_count=12,
-            transform=transform,  # This applies to both main and lores streams
-            main={"size": (params.width, params.height)},
-            lores={"size": (params.width, params.height)}  # Ensure lores matches for inference
+            transform=transform  # This applies to both main and lores streams
         )
 
         node.picam2.configure(config)
