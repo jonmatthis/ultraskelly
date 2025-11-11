@@ -1,12 +1,16 @@
+import asyncio
+
 from adafruit_motor.motor import DCMotor
 from adafruit_motorkit import MotorKit
 from pydantic import Field, SkipValidation
 
 from ultraskelly.core.bot.base_abcs import NodeParams, Node
-from ultraskelly.core.pubsub.bot_topics import ServoStateTopic
+from ultraskelly.core.pubsub.bot_topics import ServoStateTopic, ServoStateMessage
 from ultraskelly.core.pubsub.pubsub_abcs import TopicSubscriptionQueue
 from ultraskelly.core.pubsub.pubsub_manager import PubSubTopicManager
 
+import  logging
+logger = logging.getLogger(__name__)
 
 class MouthNodeParams(NodeParams):
     mouth_motor_channel: int = Field(default=2, ge=1, le=4)
@@ -49,3 +53,29 @@ class MouthNode(Node):
                    motor_kit=motor_kit,
                    mouth_motor=mouth_motor,
                    head_servo_subscription=head_servo_subscription)
+
+
+    async def run(self) -> None:
+        """Main motor control loop."""
+        logger.info(f"Starting HeadNode [gain={self.params.gain}]")
+
+        try:
+            while not self.stop_event.is_set():
+                await asyncio.sleep(0.01)
+                try:
+                    # Get message from subscription queue with timeout
+                    if not self.head_servo_subscription.empty():
+                        msg: ServoStateMessage =  await self.head_servo_subscription.get()
+                        if msg.is_locked_x or msg.is_locked_y:
+                            self.mouth_motor.throttle = 1.0
+                        else:
+                            self.mouth_motor.throttle = 0.0
+                except asyncio.TimeoutError:
+                    continue
+                except Exception:
+                    continue
+        finally:
+            # Center servos
+            self.mouth_motor.throttle = 0.0
+            await asyncio.sleep(0.5)
+            logger.info('MouthNode stopped.')
