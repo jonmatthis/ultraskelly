@@ -4,26 +4,24 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 import numpy as np
-
 from pydantic import Field, SkipValidation
+from picamera2 import CompletedRequest, Picamera2
+from picamera2.devices.imx500 import IMX500, NetworkIntrinsics
+from picamera2.devices.imx500.postprocess_highernet import postprocess_higherhrnet
+from libcamera import Transform  # Import Transform for camera flipping
 
 from ultraskelly import FAIL_ON_IMPORTS
 from ultraskelly.core.pubsub.bot_topics import PoseDataMessage, TargetLocationTopic, PoseDataTopic, FrameTopic
 from ultraskelly.core.pubsub.pubsub_manager import PubSubTopicManager
-
-logger = logging.getLogger(__name__)
-
 from ultraskelly.core.bot.base_abcs import DetectorNode, NodeParams
 from ultraskelly.core.bot.motor.head_node import TargetLocationMessage
 from ultraskelly.core.bot.sensory.camera_node import FrameMessage
 
-from picamera2 import CompletedRequest, Picamera2
-from picamera2.devices.imx500 import IMX500, NetworkIntrinsics
-from picamera2.devices.imx500.postprocess_highernet import postprocess_higherhrnet
+logger = logging.getLogger(__name__)
+
 
 class CocoKeypoint(IntEnum):
     """COCO pose estimation keypoint indices."""
-
     NOSE = 0
     LEFT_EYE = 1
     RIGHT_EYE = 2
@@ -71,30 +69,42 @@ SKELETON_CONNECTIONS: list[tuple[CocoKeypoint, CocoKeypoint]] = [
 
 class PoseDetectorParams(NodeParams):
     """Parameters for PoseDetectorNode."""
-
     model_path: str = Field(
         default="/usr/share/imx500-models/imx500_network_higherhrnet_coco.rpk",
         description="Path to IMX500 pose estimation model",
     )
     target_keypoint: CocoKeypoint = Field(
-        default=CocoKeypoint.NOSE, description="Body part to track"
+        default=CocoKeypoint.NOSE,
+        description="Body part to track"
     )
     detection_threshold: float = Field(
-        default=0.3, ge=0.0, le=1.0, description="Minimum confidence for person detection"
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence for person detection"
     )
     keypoint_threshold: float = Field(
-        default=0.3, ge=0.0, le=1.0, description="Minimum confidence for keypoint detection"
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence for keypoint detection"
     )
     inference_rate: int = Field(
-        default=10, ge=1, le=30, description="Frames per second for inference"
+        default=10,
+        ge=1,
+        le=30,
+        description="Frames per second for inference"
     )
     width: int = Field(default=640, ge=160, le=1920)
     height: int = Field(default=480, ge=120, le=1080)
+    flip_camera: bool = Field(
+        default=True,  # Set to True for upside-down mounted camera
+        description="Rotate camera image 180 degrees (for upside-down mounting)"
+    )
 
 
 class PoseDetectorNode(DetectorNode):
     """Detects human poses using IMX500 and tracks specific body part."""
-
     params: PoseDetectorParams
     imx500: SkipValidation[IMX500] = Field(default=None, exclude=True)
     picam2: SkipValidation[Picamera2] = Field(default=None, exclude=True)
@@ -122,18 +132,35 @@ class PoseDetectorNode(DetectorNode):
         intrinsics.inference_rate = params.inference_rate
         intrinsics.update_with_defaults()
 
-        # Initialize camera
+        # Initialize camera with transform for upside-down mounting
         node.picam2 = Picamera2(node.imx500.camera_num)
-        config = node.picam2.create_preview_configuration(
-            controls={"FrameRate": params.inference_rate}, buffer_count=12
+
+        # Apply 180-degree rotation if camera is upside down
+        # This transform applies to ALL streams including the low-res stream used for inference
+        transform = Transform(vflip=params.flip_camera, hflip=params.flip_camera)
+
+        # Create configuration with IMX500
+        # The IMX500 uses the 'lores' stream for inference
+        config = node.imx500.make_preset(
+            picam2=node.picam2,
+            controls={"FrameRate": params.inference_rate},
+            buffer_count=12,
+            transform=transform,  # This applies to both main and lores streams
+            main={"size": (params.width, params.height)},
+            lores={"size": (params.width, params.height)}  # Ensure lores matches for inference
         )
+
         node.picam2.configure(config)
         node.picam2.pre_callback = node._pose_callback
 
         return node
 
     def _pose_callback(self, request: CompletedRequest) -> None:
-        """Callback to process pose detection results (runs in picamera2 thread)."""
+        """Callback to process pose detection results (runs in picamera2 thread).
+
+        Since the image is now flipped BEFORE inference, the keypoints are already
+        in the correct coordinate space and don't need transformation.
+        """
         metadata = request.get_metadata()
         np_outputs = self.imx500.get_outputs(metadata=metadata, add_batch=True)
 
@@ -155,6 +182,7 @@ class PoseDetectorNode(DetectorNode):
             self.latest_keypoints = np.reshape(
                 np.stack(keypoints, axis=0), (len(scores), 17, 3)
             )
+            # No coordinate transformation needed - inference was done on flipped image
             self.latest_boxes = [np.array(b) for b in boxes]
             self.latest_scores = np.array(scores)
         else:
@@ -169,8 +197,8 @@ class PoseDetectorNode(DetectorNode):
 
         # Check confidence
         if (
-            left_shoulder[2] < self.params.keypoint_threshold
-            or right_shoulder[2] < self.params.keypoint_threshold
+                left_shoulder[2] < self.params.keypoint_threshold
+                or right_shoulder[2] < self.params.keypoint_threshold
         ):
             return None
 
@@ -217,7 +245,8 @@ class PoseDetectorNode(DetectorNode):
         """Main detection loop."""
         logger.info(
             f"Starting PoseDetectorNode [target={self.params.target_keypoint.name}, "
-            f"threshold={self.params.detection_threshold}]"
+            f"threshold={self.params.detection_threshold}, "
+            f"flip_camera={self.params.flip_camera}]"
         )
 
         self.imx500.show_network_fw_progress_bar()
@@ -245,6 +274,7 @@ class PoseDetectorNode(DetectorNode):
                 )
 
                 # Publish frames for UI
+                # The frame is already flipped by the hardware transform
                 frame = self.picam2.capture_array()
                 await self.pubsub.topics[FrameTopic].publish(FrameMessage(frame=frame))
 
