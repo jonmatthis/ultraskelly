@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from collections import deque
 
 import numpy as np
@@ -24,21 +25,27 @@ class WaistNodeParams(NodeParams):
     deactivation_threshold: float = Field(default=8.0, ge=0.0, le=90.0,
                                           description="Pan angle offset to stop waist movement")
 
-    # Control parameters
+    # Motor control parameters
+    min_throttle: float = Field(default=0.7, ge=0.5, le=1.0,
+                                description="Minimum throttle to overcome static friction")
+    max_throttle: float = Field(default=1.0, ge=0.7, le=1.0,
+                                description="Maximum throttle limit")
     proportional_gain: float = Field(default=0.015, gt=0.0, le=0.1,
                                      description="P-gain for waist control")
-    max_throttle: float = Field(default=0.6, gt=0.0, le=1.0,
-                                description="Maximum throttle to prevent wild movements")
+
+    # Safety parameters
+    max_active_duration: float = Field(default=3.0, gt=0.0,
+                                       description="Maximum time to keep motor active before timeout")
+    cooldown_duration: float = Field(default=2.0, gt=0.0,
+                                     description="Cooldown period after timeout")
 
     # Smoothing parameters
     angle_smoothing_window: int = Field(default=10, ge=1, le=50,
                                         description="Window size for angle smoothing")
-    throttle_ramp_rate: float = Field(default=0.05, gt=0.0, le=0.5,
-                                      description="Max throttle change per update")
 
 
 class WaistNode(Node):
-    """Waist controller that nulls head pan rotation with damping and hysteresis."""
+    """Waist controller with minimum throttle threshold and timeout protection."""
 
     params: WaistNodeParams
     motor_kit: SkipValidation[MotorKit] = Field(default=None, exclude=True)
@@ -47,8 +54,12 @@ class WaistNode(Node):
 
     # State tracking
     is_active: bool = Field(default=False, description="Whether waist control is active")
+    activation_start_time: float | None = Field(default=None)
+    in_cooldown: bool = Field(default=False)
+    cooldown_start_time: float | None = Field(default=None)
+
+    # Control values
     current_throttle: float = Field(default=0.0)
-    target_throttle: float = Field(default=0.0)
     pan_angle_buffer: deque[float] = Field(default_factory=lambda: deque(maxlen=10))
     smoothed_pan_offset: float = Field(default=0.0)
 
@@ -88,8 +99,61 @@ class WaistNode(Node):
 
         return instance
 
+    def _map_throttle(self, *, control_value: float) -> float:
+        """Map control value to motor throttle with minimum threshold.
+
+        Maps control values to either 0.0 or [min_throttle, max_throttle] range.
+        """
+        if abs(control_value) < 0.001:  # Essentially zero
+            return 0.0
+
+        # Map to minimum throttle + proportional range
+        throttle_range = self.params.max_throttle - self.params.min_throttle
+        sign = 1.0 if control_value > 0 else -1.0
+
+        # Scale control value (0 to 1) to throttle range
+        scaled_throttle = self.params.min_throttle + abs(control_value) * throttle_range
+
+        # Apply sign and clamp
+        final_throttle = sign * scaled_throttle
+        return float(np.clip(final_throttle, -self.params.max_throttle, self.params.max_throttle))
+
+    def _check_timeout(self) -> bool:
+        """Check if motor has been active too long and needs timeout."""
+        if not self.is_active or self.activation_start_time is None:
+            return False
+
+        current_time = time.time()
+        active_duration = current_time - self.activation_start_time
+
+        if active_duration > self.params.max_active_duration:
+            logger.warning(f"Waist motor timeout after {active_duration:.1f}s")
+            return True
+
+        return False
+
+    def _check_cooldown(self) -> bool:
+        """Check if still in cooldown period."""
+        if not self.in_cooldown or self.cooldown_start_time is None:
+            return False
+
+        current_time = time.time()
+        cooldown_elapsed = current_time - self.cooldown_start_time
+
+        if cooldown_elapsed > self.params.cooldown_duration:
+            self.in_cooldown = False
+            self.cooldown_start_time = None
+            logger.info("Waist motor cooldown complete")
+            return False
+
+        return True
+
     def _calculate_control(self, *, pan_angle: float) -> float:
-        """Calculate waist control with hysteresis and damping."""
+        """Calculate waist control with hysteresis, minimum throttle, and timeout."""
+        # Check cooldown first
+        if self._check_cooldown():
+            return 0.0
+
         # Calculate offset from center (90 degrees)
         pan_offset = pan_angle - 90.0
 
@@ -109,30 +173,40 @@ class WaistNode(Node):
             # Activate if offset exceeds activation threshold
             if abs_offset > self.params.activation_threshold:
                 self.is_active = True
+                self.activation_start_time = time.time()
                 logger.debug(f"Waist control activated at offset: {self.smoothed_pan_offset:.1f}°")
         else:
+            # Check for timeout
+            if self._check_timeout():
+                self.is_active = False
+                self.activation_start_time = None
+                self.in_cooldown = True
+                self.cooldown_start_time = time.time()
+                return 0.0
+
             # Deactivate if offset falls below deactivation threshold
             if abs_offset < self.params.deactivation_threshold:
                 self.is_active = False
+                self.activation_start_time = None
                 logger.debug(f"Waist control deactivated at offset: {self.smoothed_pan_offset:.1f}°")
 
-        # Calculate target throttle
+        # Calculate control value
         if self.is_active:
-            # Proportional control with saturation
-            raw_throttle = -self.smoothed_pan_offset * self.params.proportional_gain
-            self.target_throttle = float(np.clip(raw_throttle, -self.params.max_throttle, self.params.max_throttle))
-        else:
-            self.target_throttle = 0.0
+            # Proportional control normalized to [0, 1]
+            # Use offset above deactivation threshold for smoother control
+            effective_offset = abs_offset - self.params.deactivation_threshold
+            max_effective_offset = 90.0 - self.params.deactivation_threshold
 
-        # Apply throttle ramping for smooth acceleration/deceleration
-        throttle_diff = self.target_throttle - self.current_throttle
-        max_change = self.params.throttle_ramp_rate
+            # Normalize to 0-1 range
+            normalized_control = min(effective_offset / max_effective_offset, 1.0)
 
-        if abs(throttle_diff) > max_change:
-            change = max_change if throttle_diff > 0 else -max_change
-            self.current_throttle += change
+            # Apply proportional gain and direction
+            control_value = normalized_control * (1.0 if self.smoothed_pan_offset > 0 else -1.0)
+
+            # Map to motor throttle with minimum threshold
+            self.current_throttle = self._map_throttle(control_value=control_value)
         else:
-            self.current_throttle = self.target_throttle
+            self.current_throttle = 0.0
 
         return self.current_throttle
 
@@ -141,8 +215,9 @@ class WaistNode(Node):
         logger.info(
             f"Starting WaistNode [activation={self.params.activation_threshold}°, "
             f"deactivation={self.params.deactivation_threshold}°, "
-            f"gain={self.params.proportional_gain}, "
-            f"max_throttle={self.params.max_throttle}]"
+            f"min_throttle={self.params.min_throttle}, "
+            f"max_throttle={self.params.max_throttle}, "
+            f"timeout={self.params.max_active_duration}s]"
         )
 
         try:
@@ -162,10 +237,15 @@ class WaistNode(Node):
                     self.waist_motor.throttle = throttle
 
                     # Log state changes for debugging
-                    if abs(throttle) > 0.01 and abs(self.current_throttle - throttle) > 0.01:
+                    if self.is_active or abs(throttle) > 0.01:
+                        active_time = (
+                            time.time() - self.activation_start_time
+                            if self.activation_start_time else 0.0
+                        )
                         logger.trace(
                             f"Waist: offset={self.smoothed_pan_offset:.1f}°, "
-                            f"throttle={throttle:.2f}, active={self.is_active}"
+                            f"throttle={throttle:.2f}, active={self.is_active}, "
+                            f"active_time={active_time:.1f}s"
                         )
 
         finally:
