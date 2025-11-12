@@ -60,10 +60,6 @@ class PubSubTopicABC(BaseModel, Generic[MessageType]):
         self.subscriptions.clear()
 
 
-# ============================================================================
-# Factory Function - Eliminates Boilerplate Using Pydantic's create_model
-# ============================================================================
-
 def create_topic(
         message_type: type[MessageType],
         publication_factory: Callable[[], TopicPublicationQueue] | None = None,
