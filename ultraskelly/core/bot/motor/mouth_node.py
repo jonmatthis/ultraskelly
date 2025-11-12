@@ -14,7 +14,6 @@ logger = logging.getLogger(__name__)
 
 class MouthNodeParams(NodeParams):
     mouth_motor_channel: int = Field(default=2, ge=1, le=4)
-    head_servo_state_subscription: SkipValidation[TopicSubscriptionQueue] = Field(default=None, exclude=True)
 
 
 class MouthNode(Node):
