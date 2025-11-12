@@ -226,6 +226,6 @@ class WaistNode(Node):
         scaled_throttle = min(scaled_throttle, self.params.max_throttle)
 
         # Apply direction based on offset sign
-        final_throttle = scaled_throttle if offset > 0 else -scaled_throttle
+        final_throttle = -scaled_throttle if offset > 0 else scaled_throttle
 
         return float(final_throttle)
