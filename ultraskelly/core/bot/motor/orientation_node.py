@@ -96,7 +96,7 @@ class OrientationNodeParams(NodeParams):
         description="Maximum seconds to keep waist motor running continuously"
     )
     waist_cooldown_duration: float = Field(
-        default=1.0,
+        default=.4,
         gt=0.0,
         description="Seconds to wait after waist timeout before reactivating"
     )
