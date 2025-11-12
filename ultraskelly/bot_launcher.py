@@ -4,6 +4,7 @@ import logging
 from pydantic import BaseModel, Field, SkipValidation, ConfigDict
 
 from ultraskelly.core.bot.motor.mouth_node import MouthNode, MouthNodeParams
+from ultraskelly.core.bot.motor.orientation_node import OrientationNodeParams, OrientationNode
 from ultraskelly.core.bot.motor.waist_node import WaistNode, WaistNodeParams
 
 logger = logging.getLogger(__name__)
@@ -36,9 +37,10 @@ class LaunchConfig(NodeParams):
         default_factory=BrightnessDetectorParams
     )
     pose_detector: PoseDetectorParams = Field(default_factory=PoseDetectorParams)
-    head: HeadNodeParams = Field(default_factory=HeadNodeParams)
+    # head: HeadNodeParams = Field(default_factory=HeadNodeParams)
     mouth: MouthNodeParams = Field(default_factory=MouthNodeParams)
-    waist: WaistNodeParams = Field(default_factory=WaistNodeParams)
+    # waist: WaistNodeParams = Field(default_factory=WaistNodeParams)
+    orientation: OrientationNodeParams = Field(default_factory=OrientationNodeParams)
     ui: UINodeParams = Field(default_factory=UINodeParams)
 
 
@@ -58,9 +60,10 @@ class BotLauncher(BaseModel):
         launcher = cls(config=config, pubsub=get_or_create_pipeline_pubsub_manager())
 
         # Create motor and UI nodes
-        launcher.nodes.append(HeadNode.create(pubsub=launcher.pubsub, params=config.head))
+        # launcher.nodes.append(HeadNode.create(pubsub=launcher.pubsub, params=config.head))
+        # launcher.nodes.append(WaistNode.create(pubsub=launcher.pubsub, params=config.waist))
+        launcher.nodes.append(OrientationNode.create(pubsub=launcher.pubsub, params=config.orientation))
         launcher.nodes.append(MouthNode.create(pubsub=launcher.pubsub, params=config.mouth))
-        launcher.nodes.append(WaistNode.create(pubsub=launcher.pubsub, params=config.waist))
         launcher.nodes.append(UINode.create(pubsub=launcher.pubsub, params=config.ui))
 
         # Create detector based on type
