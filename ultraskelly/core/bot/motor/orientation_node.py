@@ -343,10 +343,10 @@ class OrientationNode(Node):
         # Apply direction
         if mode == WaistControlMode.CENTERING:
             # Move opposite to pan offset to center
-            final_throttle = -scaled_throttle if pan_offset > 0 else scaled_throttle
+            final_throttle = scaled_throttle if pan_offset > 0 else -scaled_throttle
         else:  # ASSISTING
             # Move in direction of pan offset
-            final_throttle = scaled_throttle if pan_offset > 0 else -scaled_throttle
+            final_throttle = -scaled_throttle if pan_offset > 0 else scaled_throttle
         
         return float(final_throttle)
     
