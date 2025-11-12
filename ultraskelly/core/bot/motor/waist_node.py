@@ -181,7 +181,7 @@ class WaistNode(Node):
             effective_min = self.params.min_throttle
 
         throttle_range = self.params.max_throttle - effective_min
-        sign = -1.0 if control_value > 0 else 1.0
+        sign = 1.0 if control_value > 0 else -1.0
 
         # Scale control value to throttle range
         scaled_throttle = effective_min + abs(control_value) * throttle_range
@@ -248,4 +248,75 @@ class WaistNode(Node):
         # Hysteresis with velocity consideration
         if not self.is_active:
             # Only activate if offset is large AND we're not moving away
-            if abs_offset > self.params
+            if abs_offset > self.params.activation_threshold and abs(velocity) < 20.0:
+                self.is_active = True
+                self.activation_start_time = time.time()
+                self.velocity_buffer.clear()  # Reset velocity on activation
+                logger.debug(f"Waist activated: offset={self.smoothed_pan_offset:.1f}°")
+        else:
+            # Check timeout
+            if self._check_timeout():
+                self.is_active = False
+                self.activation_start_time = None
+                self.in_cooldown = True
+                self.cooldown_start_time = time.time()
+                return 0.0
+
+            # Deactivate when close AND slow
+            if abs_offset < self.params.deactivation_threshold and abs(velocity) < 5.0:
+                self.is_active = False
+                self.activation_start_time = None
+                logger.debug(f"Waist deactivated: offset={self.smoothed_pan_offset:.1f}°, vel={velocity:.1f}")
+
+        # Calculate control
+        if self.is_active:
+            # Get overdamped control value
+            control = self._calculate_overdamped_throttle(
+                offset=self.smoothed_pan_offset,
+                velocity=velocity
+            )
+
+            # Map to motor throttle
+            self.current_throttle = self._map_throttle(control_value=control)
+        else:
+            self.current_throttle = 0.0
+
+        return self.current_throttle
+
+    async def run(self) -> None:
+        """Main motor control loop."""
+        logger.info(
+            f"Starting WaistNode OVERDAMPED [act={self.params.activation_threshold}°, "
+            f"deact={self.params.deactivation_threshold}°, "
+            f"decel_zone={self.params.deceleration_zone}°, "
+            f"P={self.params.proportional_gain}, D={self.params.derivative_gain}]"
+        )
+
+        try:
+            latest_pan_angle: float | None = None
+
+            while not self.stop_event.is_set():
+                await asyncio.sleep(0.01)  # 100Hz update
+
+                # Get latest head servo state
+                while not self.head_servo_subscription.empty():
+                    msg: ServoStateMessage = await self.head_servo_subscription.get()
+                    latest_pan_angle = msg.pan_angle
+
+                # Calculate and apply control
+                if latest_pan_angle is not None:
+                    throttle = self._calculate_control(pan_angle=latest_pan_angle)
+                    self.waist_motor.throttle = throttle
+
+                    # Debug logging
+                    if self.is_active or abs(throttle) > 0.01:
+                        logger.trace(
+                            f"Waist: offset={self.smoothed_pan_offset:.1f}°, "
+                            f"vel={self.estimated_velocity:.1f}°/s, "
+                            f"throttle={throttle:.2f}"
+                        )
+
+        finally:
+            self.waist_motor.throttle = 0.0
+            await asyncio.sleep(0.5)
+            logger.info('WaistNode stopped.')
