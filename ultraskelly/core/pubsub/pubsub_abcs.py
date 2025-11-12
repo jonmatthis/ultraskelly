@@ -28,7 +28,7 @@ class PubSubTopicABC(BaseModel, Generic[MessageType]):
     topic_registry: ClassVar[set[type['PubSubTopicABC']]] = set()
 
     message_type: type[TopicMessageABC]
-    publication: TopicPublicationQueue = Field(default_factory=lambda: asyncio.Queue())
+    publication: TopicPublicationQueue = Field(default_factory=lambda: asyncio.Queue(maxsize=100))
     subscriptions: list[TopicSubscriptionQueue] = Field(default_factory=list)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -44,7 +44,7 @@ class PubSubTopicABC(BaseModel, Generic[MessageType]):
         return cls.topic_registry.copy()
 
     def get_subscription(self) -> TopicSubscriptionQueue:
-        sub = asyncio.Queue()
+        sub = asyncio.Queue(maxsize=100)
         self.subscriptions.append(sub)
         return sub
 
