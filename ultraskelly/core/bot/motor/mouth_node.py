@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 from adafruit_motor.motor import DCMotor
 from adafruit_motorkit import MotorKit
@@ -14,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 class MouthNodeParams(NodeParams):
     mouth_motor_channel: int = Field(default=2, ge=1, le=4)
-    head_servo_state_subscription: SkipValidation[TopicSubscriptionQueue] = Field(default=None, exclude=True)
 
 
 class MouthNode(Node):
@@ -46,6 +46,17 @@ class MouthNode(Node):
 
         if mouth_motor is None:
             raise ValueError(f"Could not initialize mouth motor on channel {params.mouth_motor_channel}")
+        
+        logger.info("Test open mouth...")
+        mouth_motor.throttle = 1.0
+        time.sleep(1.0)
+        mouth_motor.throttle = -1.0
+        time.sleep(1.0)
+        mouth_motor.throttle = 1.0
+        time.sleep(1.0)
+        mouth_motor.throttle = -1.0
+        time.sleep(1.0)
+        mouth_motor.throttle = 0.0
         # Get subscription
         head_servo_subscription = pubsub.get_subscription(ServoStateTopic)
         return cls(pubsub=pubsub,
@@ -57,8 +68,7 @@ class MouthNode(Node):
 
     async def run(self) -> None:
         """Main motor control loop."""
-        logger.info(f"Starting HeadNode [gain={self.params.gain}]")
-
+        logger.info(f"Starting MoutNode")
         try:
             while not self.stop_event.is_set():
                 await asyncio.sleep(0.01)
@@ -66,8 +76,8 @@ class MouthNode(Node):
                     # Get message from subscription queue with timeout
                     if not self.head_servo_subscription.empty():
                         msg: ServoStateMessage =  await self.head_servo_subscription.get()
-                        if msg.is_locked_x or msg.is_locked_y:
-                            self.mouth_motor.throttle = 1.0
+                        if msg.is_locked_x and msg.is_locked_y:
+                            self.mouth_motor.throttle = -1.0
                         else:
                             self.mouth_motor.throttle = 0.0
                 except asyncio.TimeoutError:

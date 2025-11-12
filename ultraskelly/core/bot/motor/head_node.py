@@ -31,7 +31,7 @@ class HeadNodeParams(NodeParams):
     gain: float = Field(default=0.05, gt=0.0, le=1.0)
     roll_gain: float = Field(default=0.0, gt=0.0, le=1.0)
     roll_smoothing: float = Field(default=0.7, ge=0.0, le=1.0)
-    deadzone: int = Field(default=30, ge=0)
+    deadzone: int = Field(default=100, ge=0)
     roll_deadzone: float = Field(default=5.0, ge=0.0)
 
     @property

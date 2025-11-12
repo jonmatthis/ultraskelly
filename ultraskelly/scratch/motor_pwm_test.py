@@ -12,13 +12,13 @@ for freq in pwm_frequencies:
     try:
         kit: MotorKit = MotorKit(address=0x60, pwm_frequency=freq)
 
-        print("Motor at 70% forward...")
-        kit.motor1.throttle = 1.0
+        print("Motor at 100% forward...")
+        kit.motor2.throttle = 1.0
         sleep(2)
-        kit.motor1.throttle = -1.0
+        kit.motor2.throttle = -1.0
         sleep(2)
     
-        kit.motor1.throttle = 0.0
+        kit.motor2.throttle = 0.0
 
         print(f"✓ {freq}Hz worked! How did it sound/perform?")
         sleep(1)

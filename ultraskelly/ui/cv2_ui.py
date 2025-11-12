@@ -174,7 +174,7 @@ class UINode(Node):
             )
             cv2.putText(
                 frame,
-                f"Pan: {self.latest_servo_state.pan_angle:.1f}°",
+                f"Pan: {self.latest_servo_state.pan_angle:.1f}° - x-locked: {self.latest_servo_state.is_locked_x}",
                 (10, 60),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
@@ -183,7 +183,7 @@ class UINode(Node):
             )
             cv2.putText(
                 frame,
-                f"Tilt: {self.latest_servo_state.tilt_angle:.1f}°",
+                f"Tilt: {self.latest_servo_state.tilt_angle:.1f}° - y-locked: {self.latest_servo_state.is_locked_y}",
                 (10, 85),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
