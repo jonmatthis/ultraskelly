@@ -53,9 +53,15 @@ class WaistNodeParams(NodeParams):
 
     # Safety timeout
     max_active_duration: float = Field(
-        default=2.0,
+        default=.5,
         gt=0.0,
         description="Maximum seconds to keep motor running continuously"
+    )
+
+    motor_cooldown_duration: float = Field(
+        default=1.0,
+        gt=0.0,
+        description="Seconds to wait after motor timeout before reactivating"
     )
 
 
@@ -69,6 +75,8 @@ class WaistNode(Node):
 
     # Timeout tracking
     motor_start_time: float | None = Field(default=None)
+    # Cooldown tracking - when cooldown ends (absolute time)
+    cooldown_end_time: float | None = Field(default=None)
 
     @classmethod
     def create(
@@ -107,6 +115,68 @@ class WaistNode(Node):
             head_servo_subscription=head_servo_subscription
         )
 
+    async def run(self) -> None:
+        """Main motor control loop."""
+        logger.info(
+            f"Starting WaistNode [deadzone={self.params.deadzone}°, "
+            f"gain={self.params.gain}, throttle={self.params.min_throttle:.1f}-{self.params.max_throttle:.1f}, "
+            f"timeout={self.params.max_active_duration}s, cooldown={self.params.motor_cooldown_duration}s]"
+        )
+
+        try:
+            while not self.stop_event.is_set():
+                # Short sleep for responsive control
+                await asyncio.sleep(0.5)  # 2Hz update rate
+
+                # Get latest head servo state (drain queue to get most recent)
+                latest_msg: ServoStateMessage | None = None
+                while not self.head_servo_subscription.empty():
+                    latest_msg = await self.head_servo_subscription.get()
+
+                if latest_msg is None:
+                    # No messages yet, keep motor stopped
+                    self.waist_motor.throttle = 0.0
+                    continue
+
+                # Calculate and apply throttle (includes timeout and cooldown check)
+                throttle = self._calculate_throttle(pan_angle=latest_msg.pan_angle)
+                self.waist_motor.throttle = throttle
+
+                # Log only when motor is active or in cooldown
+                if abs(throttle) > 0.01:
+                    logger.debug(
+                        f"Waist: pan={latest_msg.pan_angle:.1f}°, "
+                        f"offset={latest_msg.pan_angle - 90:.1f}°, "
+                        f"throttle={throttle:.2f}"
+                    )
+                elif self._is_in_cooldown():
+                    remaining_cooldown = self.cooldown_end_time - time.time()
+                    logger.debug(
+                        f"Waist in cooldown: {remaining_cooldown:.1f}s remaining"
+                    )
+
+        except Exception as e:
+            logger.error(f"WaistNode error: {e}")
+            raise
+        finally:
+            # Always stop motor on exit
+            self.waist_motor.throttle = 0.0
+            await asyncio.sleep(0.5)
+            logger.info('WaistNode stopped.')
+
+    def _is_in_cooldown(self) -> bool:
+        """Check if motor is currently in cooldown period."""
+        if self.cooldown_end_time is None:
+            return False
+
+        current_time = time.time()
+        if current_time < self.cooldown_end_time:
+            return True
+
+        # Cooldown has expired, clear it
+        self.cooldown_end_time = None
+        return False
+
     def _calculate_throttle(self, *, pan_angle: float) -> float:
         """
         Calculate motor throttle based on pan angle offset from center.
@@ -117,11 +187,18 @@ class WaistNode(Node):
         Returns:
             Motor throttle (0 or min_throttle to max_throttle with sign)
         """
-        # Check timeout first
+        # Check if in cooldown first
+        if self._is_in_cooldown():
+            return 0.0
+
+        # Check timeout
         if self.motor_start_time is not None:
             elapsed = time.time() - self.motor_start_time
             if elapsed > self.params.max_active_duration:
-                logger.warning(f"Waist motor timeout after {elapsed:.1f}s")
+                logger.warning(
+                    f"Waist motor timeout after {elapsed:.1f}s, entering cooldown for {self.params.motor_cooldown_duration}s")
+                # Enter cooldown
+                self.cooldown_end_time = time.time() + self.params.motor_cooldown_duration
                 self.motor_start_time = None  # Reset for next activation
                 return 0.0
 
@@ -133,9 +210,10 @@ class WaistNode(Node):
             self.motor_start_time = None  # Reset timer when stopped
             return 0.0
 
-        # Track when motor starts
+        # Track when motor starts (but not if we're just coming out of cooldown)
         if self.motor_start_time is None:
             self.motor_start_time = time.time()
+            logger.debug(f"Motor starting with offset {offset:.1f}°")
 
         # Simple proportional control
         raw_throttle = abs(offset) * self.params.gain
@@ -151,47 +229,3 @@ class WaistNode(Node):
         final_throttle = scaled_throttle if offset > 0 else -scaled_throttle
 
         return float(final_throttle)
-
-    async def run(self) -> None:
-        """Main motor control loop."""
-        logger.info(
-            f"Starting WaistNode [deadzone={self.params.deadzone}°, "
-            f"gain={self.params.gain}, throttle={self.params.min_throttle:.1f}-{self.params.max_throttle:.1f}, "
-            f"timeout={self.params.max_active_duration}s]"
-        )
-
-        try:
-            while not self.stop_event.is_set():
-                # Short sleep for responsive control
-                await asyncio.sleep(0.1)  # 10Hz update rate
-
-                # Get latest head servo state (drain queue to get most recent)
-                latest_msg: ServoStateMessage | None = None
-                while not self.head_servo_subscription.empty():
-                    latest_msg = await self.head_servo_subscription.get()
-
-                if latest_msg is None:
-                    # No messages yet, keep motor stopped
-                    self.waist_motor.throttle = 0.0
-                    continue
-
-                # Calculate and apply throttle (includes timeout check)
-                throttle = self._calculate_throttle(pan_angle=latest_msg.pan_angle)
-                self.waist_motor.throttle = throttle
-
-                # Log only when motor is active
-                if abs(throttle) > 0.01:
-                    logger.debug(
-                        f"Waist: pan={latest_msg.pan_angle:.1f}°, "
-                        f"offset={latest_msg.pan_angle - 90:.1f}°, "
-                        f"throttle={throttle:.2f}"
-                    )
-
-        except Exception as e:
-            logger.error(f"WaistNode error: {e}")
-            raise
-        finally:
-            # Always stop motor on exit
-            self.waist_motor.throttle = 0.0
-            await asyncio.sleep(0.5)
-            logger.info('WaistNode stopped.')
