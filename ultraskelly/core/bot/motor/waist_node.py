@@ -73,10 +73,10 @@ class WaistNode(Node):
                         if abs(head_pan_off_center) > self.params.waist_deadzone and offset_changing:
                             if head_pan_off_center > 0:
                                 # Target is to the right, turn waist to the right
-                                self.waist_motor.throttle = 1.0
+                                self.waist_motor.throttle = -1.0
                             else:
                                 # Target is to the left, turn waist to the left
-                                self.waist_motor.throttle = -1.0
+                                self.waist_motor.throttle = 1.0
                         else:
                             self.waist_motor.throttle = 0.0
                 except asyncio.TimeoutError:
