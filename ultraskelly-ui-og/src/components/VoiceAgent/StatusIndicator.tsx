@@ -1,4 +1,4 @@
-import {useVoiceAgentContext} from "./VoiceAgentProvider.tsx";
+import {useVoiceAgentContext} from "../../services/VoiceAgentProvider.tsx";
 
 export function StatusIndicator() {
   const { voiceAgent, backend } = useVoiceAgentContext();
@@ -7,7 +7,7 @@ export function StatusIndicator() {
     if (!backend.isHealthy) {
       return '❌ Backend not running. Please start the server!';
     }
-    
+
     if (backend.isChecking) {
       return 'Checking backend...';
     }

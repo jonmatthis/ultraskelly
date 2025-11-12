@@ -1,4 +1,4 @@
-import {useVoiceAgentContext} from "./VoiceAgentProvider.tsx";
+import {useVoiceAgentContext} from "../../services/VoiceAgentProvider.tsx";
 
 export function AudioControls() {
   const { voiceAgent } = useVoiceAgentContext();
@@ -17,7 +17,7 @@ export function AudioControls() {
 
   return (
     <div className="audio-controls">
-      <button 
+      <button
         onClick={handleInterrupt}
         className="interrupt-btn"
       >

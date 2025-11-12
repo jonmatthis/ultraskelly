@@ -5,7 +5,7 @@ import {
     NoiseGateProcessor,
 } from '../../utils/audioProcessors';
 import { useEffect, useRef, useState } from 'react';
-import { useVoiceAgentContext } from './VoiceAgentProvider';
+import { useVoiceAgentContext } from '../../services/VoiceAgentProvider.tsx';
 import { AudioAnalyzer } from '../../services/audioAnalyzer';
 import { AudioEvent, AudioStartEvent, AudioStoppedEvent } from "../../types/types";
 import { AudioWaveformVisualizer } from "./WaveformVisualizer.tsx";

@@ -1,4 +1,4 @@
-import {useVoiceAgentContext} from "./VoiceAgentProvider.tsx";
+import {useVoiceAgentContext} from "../../services/VoiceAgentProvider.tsx";
 import {useState} from "react";
 import {VoiceAgentConfig} from "../../types/types.ts";
 

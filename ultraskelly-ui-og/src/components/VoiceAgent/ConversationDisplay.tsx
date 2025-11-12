@@ -1,4 +1,4 @@
-import { useVoiceAgentContext } from "./VoiceAgentProvider.tsx";
+import { useVoiceAgentContext } from "../../services/VoiceAgentProvider.tsx";
 import { useEffect, useRef } from "react";
 
 function formatTime(date: Date): string {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useVoiceAgentContext } from './VoiceAgentProvider';
+import { useVoiceAgentContext } from '../../services/VoiceAgentProvider.tsx';
 
 export function MicrophoneController() {
     const { voiceAgent } = useVoiceAgentContext();
