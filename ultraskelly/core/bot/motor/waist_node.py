@@ -71,12 +71,13 @@ class WaistNode(Node):
                         head_pan_off_center = msg.pan_angle - 90.0
                         offset_changing = np.mean(np.diff(recent_head_offsets))> self.params.waist_deadzone if len(recent_head_offsets) > 1 else True
                         if abs(head_pan_off_center) > self.params.waist_deadzone and offset_changing:
+                            proportional_gain = head_pan_off_center/90.0
                             if head_pan_off_center > 0:
                                 # Target is to the right, turn waist to the right
-                                self.waist_motor.throttle = 1.0
+                                self.waist_motor.throttle = 1.0 * proportional_gain
                             else:
                                 # Target is to the left, turn waist to the left
-                                self.waist_motor.throttle = -1.0
+                                self.waist_motor.throttle = -1.0 * proportional_gain
                         else:
                             self.waist_motor.throttle = 0.0
                 except asyncio.TimeoutError:
