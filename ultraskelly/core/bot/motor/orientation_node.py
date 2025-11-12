@@ -57,7 +57,7 @@ class OrientationNodeParams(NodeParams):
         description="Minimum throttle to overcome static friction"
     )
     waist_max_throttle: float = Field(
-        default=0.9,
+        default=0.8,
         ge=0.7,
         le=1.0,
         description="Maximum waist motor throttle"
@@ -303,7 +303,7 @@ class OrientationNode(Node):
             pan_offset = self.pan_angle - 90.0
             
             # Small deadzone to prevent oscillation when centered
-            if abs(pan_offset) < 5.0:
+            if abs(pan_offset) < 15.0:
                 self.waist_motor_start_time = None
                 return 0.0
             
@@ -343,7 +343,8 @@ class OrientationNode(Node):
         # Apply direction
         if mode == WaistControlMode.CENTERING:
             # Move opposite to pan offset to center
-            final_throttle = scaled_throttle if pan_offset > 0 else -scaled_throttle
+            # final_throttle = scaled_throttle if pan_offset > 0 else -scaled_throttle
+            final_throttle = 0 # turn off centering for now
         else:  # ASSISTING
             # Move in direction of pan offset
             final_throttle = -scaled_throttle if pan_offset > 0 else scaled_throttle
