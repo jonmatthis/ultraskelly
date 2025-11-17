@@ -42,6 +42,9 @@ class LaunchConfig(NodeParams):
     # waist: WaistNodeParams = Field(default_factory=WaistNodeParams)
     orientation: OrientationNodeParams = Field(default_factory=OrientationNodeParams)
     ui: UINodeParams = Field(default_factory=UINodeParams)
+    restart_interval_seconds: float = Field(
+        default=120.0, description="How often to restart all nodes"
+    )
 
 
 class BotLauncher(BaseModel):
@@ -51,70 +54,124 @@ class BotLauncher(BaseModel):
     pubsub: SkipValidation[PubSubTopicManager]
     nodes: list[Node] = Field(default_factory=list)
     tasks: list[asyncio.Task] = Field(default_factory=list, exclude=True)
+    should_stop: bool = Field(default=False, exclude=True)
+
+    def _create_nodes(self) -> None:
+        """Create all nodes from config."""
+        self.nodes.clear()
+        
+        # Create motor and UI nodes
+        # self.nodes.append(HeadNode.create(pubsub=self.pubsub, params=self.config.head))
+        # self.nodes.append(WaistNode.create(pubsub=self.pubsub, params=self.config.waist))
+        self.nodes.append(OrientationNode.create(pubsub=self.pubsub, params=self.config.orientation))
+        self.nodes.append(MouthNode.create(pubsub=self.pubsub, params=self.config.mouth))
+        self.nodes.append(UINode.create(pubsub=self.pubsub, params=self.config.ui))
+
+        # Create detector based on type
+        if self.config.detector_type == DetectorType.BRIGHTNESS:
+            self.nodes.append(
+                VisionNode.create(pubsub=self.pubsub, params=self.config.vision)
+            )
+            self.nodes.append(
+                BrightnessDetectorNode.create(
+                    pubsub=self.pubsub, params=self.config.brightness_detector
+                )
+            )
+        elif self.config.detector_type == DetectorType.POSE:
+            self.nodes.append(
+                PoseDetectorNode.create(pubsub=self.pubsub, params=self.config.pose_detector)
+            )
+        else:
+            raise ValueError(f"Unknown detector type: {self.config.detector_type}")
+
+        logger.info(f"Created {len(self.nodes)} nodes")
 
     @classmethod
     def from_config(cls, config: LaunchConfig) -> "BotLauncher":
-        """Instantiate nodes based on config."""
+        """Instantiate launcher and nodes based on config."""
         logger.info("Creating nodes from launch config...")
 
         launcher = cls(config=config, pubsub=get_or_create_pipeline_pubsub_manager())
-
-        # Create motor and UI nodes
-        # launcher.nodes.append(HeadNode.create(pubsub=launcher.pubsub, params=config.head))
-        # launcher.nodes.append(WaistNode.create(pubsub=launcher.pubsub, params=config.waist))
-        launcher.nodes.append(OrientationNode.create(pubsub=launcher.pubsub, params=config.orientation))
-        launcher.nodes.append(MouthNode.create(pubsub=launcher.pubsub, params=config.mouth))
-        launcher.nodes.append(UINode.create(pubsub=launcher.pubsub, params=config.ui))
-
-        # Create detector based on type
-        if config.detector_type == DetectorType.BRIGHTNESS:
-            launcher.nodes.append(
-                VisionNode.create(pubsub=launcher.pubsub, params=config.vision)
-            )
-            launcher.nodes.append(
-                BrightnessDetectorNode.create(
-                    pubsub=launcher.pubsub, params=config.brightness_detector
-                )
-            )
-        elif config.detector_type == DetectorType.POSE:
-            launcher.nodes.append(
-                PoseDetectorNode.create(pubsub=launcher.pubsub, params=config.pose_detector)
-            )
-        else:
-            raise ValueError(f"Unknown detector type: {config.detector_type}")
-
-        logger.info(f"Created {len(launcher.nodes)} nodes")
+        launcher._create_nodes()
+        
         return launcher
 
+    async def _shutdown_nodes(self) -> None:
+        """Stop all nodes and clean up tasks."""
+        logger.info("Shutting down nodes...")
+        
+        # Stop all nodes
+        for node in self.nodes:
+            node.stop()
+
+        # Cancel all tasks
+        for task in self.tasks:
+            task.cancel()
+
+        # Wait for tasks to finish cancelling
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+        
+        # Clear task list
+        self.tasks.clear()
+        
+        # Explicitly close camera resources for PoseDetectorNode
+        for node in self.nodes:
+            if hasattr(node, 'picam2') and node.picam2 is not None:
+                logger.info(f"Closing camera for {node.__class__.__name__}")
+                node.picam2.close()
+                node.picam2 = None
+        
+        # Clear nodes to release resources
+        self.nodes.clear()
+        
+        # Give hardware time to release resources
+        await asyncio.sleep(1.0)
+        
+        logger.info("All nodes stopped and resources released")
+
+    async def _start_nodes(self) -> None:
+        """Start all nodes as async tasks."""
+        logger.info("Starting nodes...")
+        
+        for node in self.nodes:
+            task = asyncio.create_task(node.run())
+            self.tasks.append(task)
+        
+        logger.info(f"Started {len(self.tasks)} node tasks")
+
     async def run(self) -> None:
-        """Launch all nodes."""
+        """Launch all nodes with periodic restarts."""
         logger.info("=" * 60)
         logger.info("LAUNCHING TARGET TRACKER WITH SOPHISTICATED PUBSUB")
+        logger.info(f"Auto-restart interval: {self.config.restart_interval_seconds}s")
         logger.info("=" * 60)
 
         try:
-            # Start all nodes as async tasks
-            for node in self.nodes:
-                task = asyncio.create_task(node.run())
-                self.tasks.append(task)
-
-            # Wait for all tasks
-            await asyncio.gather(*self.tasks)
+            # Initial start
+            await self._start_nodes()
+            
+            while not self.should_stop:
+                # Wait for restart interval
+                await asyncio.sleep(self.config.restart_interval_seconds)
+                
+                logger.info("Restarting cycle...")
+                
+                # Shutdown nodes and release resources
+                await self._shutdown_nodes()
+                
+                # Recreate nodes from config
+                self._create_nodes()
+                
+                # Start nodes again
+                await self._start_nodes()
 
         except KeyboardInterrupt:
             logger.info("\nStopping...")
+            self.should_stop = True
         finally:
-            # Stop all nodes
-            for node in self.nodes:
-                node.stop()
-
-            # Cancel all tasks
-            for task in self.tasks:
-                task.cancel()
-
-            # Wait for tasks to finish cancelling
-            await asyncio.gather(*self.tasks, return_exceptions=True)
-
+            # Final cleanup
+            await self._shutdown_nodes()
+            
             # Clean up pubsub
             self.pubsub.close()
             logger.info("All nodes stopped and pubsub closed")
